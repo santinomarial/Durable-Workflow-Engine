@@ -7,6 +7,12 @@ from datetime import timedelta
 
 from engine.persistence import Pool, complete_activity, fail_activity, lease_task
 from engine.runtime import DefinitionRegistry
+from engine.runtime.serialization import JSONValue
+from engine.sdk.activity_context import (
+    ActivityExecutionContext,
+    reset_activity_context,
+    set_activity_context,
+)
 
 
 async def run_activity_task(
@@ -35,17 +41,36 @@ async def run_activity_task(
     kwargs = command_input.get("kwargs")
     if not isinstance(args, list) or not isinstance(kwargs, dict):
         raise TypeError("activity arguments are malformed")
+    idempotency_key = task.input.get("idempotency_key")
+    if not isinstance(idempotency_key, str):
+        raise TypeError("activity task has no idempotency key")
 
     definition = registry.activity(activity_type)
+    context_token = set_activity_context(
+        ActivityExecutionContext(
+            idempotency_key=idempotency_key,
+            task_id=task.id,
+            attempt=task.attempt,
+        )
+    )
+    failure: JSONValue = None
+    result: JSONValue = None
     try:
-        result = definition.function(*args, **kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-    except Exception as error:
+        try:
+            activity_result = definition.function(*args, **kwargs)
+            if inspect.isawaitable(activity_result):
+                result = await activity_result
+            else:
+                result = activity_result
+        except Exception as error:
+            failure = {"type": type(error).__name__, "message": str(error)}
+    finally:
+        reset_activity_context(context_token)
+    if failure is not None:
         await fail_activity(
             pool,
             task=task,
-            failure={"type": type(error).__name__, "message": str(error)},
+            failure=failure,
         )
     else:
         await complete_activity(pool, task=task, result=result)

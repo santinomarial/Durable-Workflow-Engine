@@ -1,6 +1,7 @@
 """PostgreSQL persistence and atomic transitions."""
 
 from engine.persistence.database import Pool, create_pool
+from engine.persistence.effects import record_idempotent_effect
 from engine.persistence.leasing import (
     LeasedTask,
     StaleLeaseError,
@@ -53,6 +54,7 @@ __all__ = [
     "load_workflow_replay_state",
     "process_activity_timeout",
     "reclaim_expired_workflow_tasks",
+    "record_idempotent_effect",
     "register_workflow_definition",
     "release_workflow_task",
     "renew_lease",
