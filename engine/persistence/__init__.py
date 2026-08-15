@@ -12,6 +12,13 @@ from engine.persistence.leasing import (
     release_workflow_task,
     renew_lease,
 )
+from engine.persistence.operations import (
+    WorkerHeartbeat,
+    get_operational_gauges,
+    heartbeat_worker,
+    list_worker_heartbeats,
+    stop_worker,
+)
 from engine.persistence.queries import (
     ExecutionStats,
     ExecutionSummary,
@@ -49,6 +56,7 @@ __all__ = [
     "Pool",
     "StaleLeaseError",
     "StartedWorkflow",
+    "WorkerHeartbeat",
     "WorkflowReplayState",
     "commit_workflow_replay",
     "complete_activity",
@@ -58,10 +66,13 @@ __all__ = [
     "get_execution",
     "get_execution_stats",
     "get_history",
+    "get_operational_gauges",
     "heartbeat_activity",
+    "heartbeat_worker",
     "lease_task",
     "list_api_audit",
     "list_executions",
+    "list_worker_heartbeats",
     "load_workflow_replay_state",
     "process_activity_timeout",
     "reclaim_expired_workflow_tasks",
@@ -72,5 +83,6 @@ __all__ = [
     "request_workflow_cancellation",
     "send_signal",
     "start_workflow",
+    "stop_worker",
     "terminate_workflow",
 ]

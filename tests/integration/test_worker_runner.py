@@ -58,6 +58,7 @@ async def test_continuous_worker_drives_timer_and_activity_to_completion() -> No
                 registry,
                 queue_name="runner-integration",
                 idle_delay=0.001,
+                heartbeat_interval=0.01,
                 stop=stop,
             )
         )
@@ -80,6 +81,12 @@ async def test_continuous_worker_drives_timer_and_activity_to_completion() -> No
                 "select event_type from history_events where workflow_id = $1 order by seq",
                 execution.workflow_id,
             )
+            heartbeat = await connection.fetchrow(
+                """
+                select queue_name, roles, stopped_at
+                from worker_heartbeats order by started_at desc limit 1
+                """
+            )
         assert [event["event_type"] for event in event_types] == [
             "WorkflowExecutionStarted",
             "TimerStarted",
@@ -89,6 +96,10 @@ async def test_continuous_worker_drives_timer_and_activity_to_completion() -> No
             "ActivityCompleted",
             "WorkflowExecutionCompleted",
         ]
+        assert heartbeat is not None
+        assert heartbeat["queue_name"] == "runner-integration"
+        assert set(heartbeat["roles"]) == {"workflow", "activity", "maintenance"}
+        assert heartbeat["stopped_at"] is not None
     finally:
         stop.set()
         if worker is not None and not worker.done():

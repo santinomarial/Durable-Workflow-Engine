@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
 from typing import Literal
+from uuid import UUID, uuid4
 
-from engine.persistence import Pool
+from engine.observability import METRICS
+from engine.persistence import Pool, heartbeat_worker, stop_worker
 from engine.runtime import DefinitionRegistry
 from engine.workers.activity_worker import run_activity_task
 from engine.workers.maintenance_worker import run_maintenance
@@ -33,15 +36,46 @@ async def _run_loop(
     idle_delay: float,
 ) -> None:
     while not stop.is_set():
+        started_at = time.monotonic()
         try:
             progressed = bool(await step())
         except asyncio.CancelledError:
             raise
         except Exception:
             LOGGER.exception("%s worker step failed; polling will continue", role)
+            METRICS.increment("dwe_worker_step_errors_total", labels={"role": role})
             progressed = False
+        finally:
+            METRICS.observe(
+                "dwe_worker_step_duration_seconds",
+                time.monotonic() - started_at,
+                labels={"role": role},
+            )
+        METRICS.increment(
+            "dwe_worker_steps_total",
+            labels={"role": role, "result": "progressed" if progressed else "idle"},
+        )
         if not progressed:
             await _idle(stop, idle_delay)
+
+
+async def _heartbeat_loop(
+    pool: Pool,
+    *,
+    worker_id: UUID,
+    queue_name: str,
+    roles: tuple[WorkerRole, ...],
+    stop: asyncio.Event,
+    interval: float,
+) -> None:
+    while not stop.is_set():
+        await heartbeat_worker(
+            pool,
+            worker_id=worker_id,
+            queue_name=queue_name,
+            roles=roles,
+        )
+        await _idle(stop, interval)
 
 
 async def run_worker(
@@ -52,14 +86,19 @@ async def run_worker(
     roles: Iterable[WorkerRole] = ALL_ROLES,
     idle_delay: float = 0.05,
     stop: asyncio.Event | None = None,
+    heartbeat_interval: float = 10,
 ) -> None:
     """Run selected worker roles concurrently until the stop event is set or canceled."""
     if idle_delay <= 0:
         raise ValueError("idle_delay must be positive")
+    if heartbeat_interval <= 0:
+        raise ValueError("heartbeat_interval must be positive")
     selected = frozenset(roles)
     if not selected or not selected <= ALL_ROLES:
         raise ValueError(f"roles must be a non-empty subset of {sorted(ALL_ROLES)}")
     stop_event = stop or asyncio.Event()
+    worker_id = uuid4()
+    ordered_roles = tuple(sorted(selected))
 
     async def workflow_step() -> bool:
         return await run_workflow_task(pool, registry, queue_name=queue_name)
@@ -75,14 +114,42 @@ async def run_worker(
         "activity": activity_step,
         "maintenance": maintenance_step,
     }
-    async with asyncio.TaskGroup() as group:
-        for role in sorted(selected):
+    LOGGER.info(
+        "worker service starting",
+        extra={
+            "event": "worker_start",
+            "worker_id": str(worker_id),
+            "queue": queue_name,
+            "roles": ordered_roles,
+        },
+    )
+    try:
+        async with asyncio.TaskGroup() as group:
             group.create_task(
-                _run_loop(
-                    role,
-                    steps[role],
+                _heartbeat_loop(
+                    pool,
+                    worker_id=worker_id,
+                    queue_name=queue_name,
+                    roles=ordered_roles,
                     stop=stop_event,
-                    idle_delay=idle_delay,
+                    interval=heartbeat_interval,
                 ),
-                name=f"durable-engine-{role}",
+                name="durable-engine-heartbeat",
             )
+            for role in ordered_roles:
+                group.create_task(
+                    _run_loop(
+                        role,
+                        steps[role],
+                        stop=stop_event,
+                        idle_delay=idle_delay,
+                    ),
+                    name=f"durable-engine-{role}",
+                )
+    finally:
+        with suppress(Exception):
+            await stop_worker(pool, worker_id=worker_id)
+        LOGGER.info(
+            "worker service stopped",
+            extra={"event": "worker_stop", "worker_id": str(worker_id)},
+        )

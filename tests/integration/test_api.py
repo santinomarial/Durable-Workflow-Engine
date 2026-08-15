@@ -45,11 +45,17 @@ async def test_api_controls_and_inspects_workflow() -> None:
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             health = await client.get("/api/health")
-            assert health.json() == {"status": "ok"}
+            assert health.json()["status"] == "ready"
+            assert health.json()["database"] == "ok"
+            assert health.json()["schema_version"] == "0009"
             assert health.headers["cache-control"] == "no-store"
             assert health.headers["x-content-type-options"] == "nosniff"
             assert health.headers["x-frame-options"] == "DENY"
             assert health.headers["x-request-id"]
+            liveness = await client.get("/api/health/live")
+            assert liveness.json() == {"status": "alive"}
+            readiness = await client.get("/api/health/ready")
+            assert readiness.json()["status"] == "ready"
             page = await client.get("/")
             assert page.status_code == 200
             assert "Workflow operations" in page.text
@@ -77,6 +83,10 @@ async def test_api_controls_and_inspects_workflow() -> None:
                 json={"workflow_type": api_workflow.name, "definition_version": 1},
             )
             assert viewer_write.status_code == 403
+            viewer_metrics = await client.get(
+                "/metrics", headers={"Authorization": f"Bearer {viewer_token}"}
+            )
+            assert viewer_metrics.status_code == 403
             too_large = await client.post(
                 "/api/workflows",
                 headers={"Authorization": f"Bearer {admin_token}"},
@@ -175,5 +185,14 @@ async def test_api_controls_and_inspects_workflow() -> None:
             ]
             assert all(record["actor_key_id"] == "api-admin" for record in audit.json())
             assert all(record["request_id"] for record in audit.json())
+
+            metrics = await client.get("/metrics")
+            assert metrics.status_code == 200
+            assert metrics.headers["content-type"] == "text/plain; version=0.0.4; charset=utf-8"
+            assert "dwe_http_requests_total" in metrics.text
+            assert "dwe_tasks_pending" in metrics.text
+            assert "dwe_workflows_running" in metrics.text
+            workers = await client.get("/api/workers")
+            assert workers.json() == []
     finally:
         await pool.close()

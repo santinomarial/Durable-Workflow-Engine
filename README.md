@@ -223,6 +223,9 @@ and reproduction commands are in [the benchmark report](docs/benchmarks.md).
 
 GitHub Actions runs formatting, lint, strict typing, unit tests, PostgreSQL
 integration tests, and the `SIGKILL` chaos profile against PostgreSQL 17.
+The runtime provides JSON request/worker logs, database-visible worker
+heartbeats, separate liveness/readiness probes, and authenticated Prometheus
+metrics; deployment guidance is in [production operations](docs/operations.md).
 Locally:
 
 ```shell

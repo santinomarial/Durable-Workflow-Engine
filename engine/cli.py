@@ -7,13 +7,15 @@ import asyncio
 import hashlib
 import importlib
 import json
-import logging
 import os
 import secrets
+import signal
+from contextlib import suppress
 from dataclasses import asdict
 from typing import cast
 from uuid import UUID
 
+from engine.observability import configure_logging
 from engine.persistence import Pool, create_pool, register_workflow_definition, start_workflow
 from engine.persistence.migrations import migrate
 from engine.runtime.definitions import DefinitionRegistry, WorkflowDefinition
@@ -115,6 +117,11 @@ async def _run_worker(args: argparse.Namespace) -> int:
     database_url = cast(str, args.database_url)
     registry = _load_registry(cast(str, args.definitions))
     pool = await _registered_pool(database_url)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
+        with suppress(NotImplementedError):
+            loop.add_signal_handler(shutdown_signal, stop.set)
     try:
         for definition in registry.workflows:
             await register_workflow_definition(pool, definition)
@@ -125,6 +132,8 @@ async def _run_worker(args: argparse.Namespace) -> int:
             queue_name=cast(str, args.queue),
             roles=roles or ("workflow", "activity", "maintenance"),
             idle_delay=cast(float, args.poll_interval),
+            heartbeat_interval=cast(float, args.heartbeat_interval),
+            stop=stop,
         )
     finally:
         await pool.close()
@@ -197,12 +206,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="worker role to run; repeat it, or omit for all roles",
     )
     worker_parser.add_argument("--poll-interval", type=float, default=0.05)
+    worker_parser.add_argument("--heartbeat-interval", type=float, default=10.0)
     _database_argument(worker_parser)
     return parser
 
 
 def main() -> None:
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+    configure_logging()
     parser = build_parser()
     args = parser.parse_args()
     if args.command == "auth-key":

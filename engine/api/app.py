@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -27,6 +30,7 @@ from engine.api.security import (
     bearer_token,
     require_role,
 )
+from engine.observability import METRICS, configure_logging
 from engine.persistence import (
     AuditContext,
     Pool,
@@ -34,14 +38,16 @@ from engine.persistence import (
     get_execution,
     get_execution_stats,
     get_history,
+    get_operational_gauges,
     list_api_audit,
     list_executions,
+    list_worker_heartbeats,
     request_workflow_cancellation,
     send_signal,
     start_workflow,
     terminate_workflow,
 )
-from engine.persistence.migrations import migrate
+from engine.persistence.migrations import discover_migrations, migrate
 from engine.persistence.transitions import TransitionError
 from engine.runtime.serialization import JSONValue
 
@@ -49,6 +55,7 @@ _PACKAGED_UI_DIR = Path(__file__).resolve().parents[1] / "_assets" / "ui"
 _SOURCE_UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 UI_DIR = _PACKAGED_UI_DIR if _PACKAGED_UI_DIR.exists() else _SOURCE_UI_DIR
 WorkflowStatus = Literal["running", "completed", "failed", "terminated"]
+LOGGER = logging.getLogger(__name__)
 
 
 class StartWorkflowRequest(BaseModel):
@@ -112,10 +119,15 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
     owned_pool: Pool | None = None
     auth_config = auth or AuthConfig.from_env()
     rate_limiter = FixedWindowRateLimiter(auth_config.requests_per_minute)
+    health_timeout = float(os.environ.get("DWE_HEALTH_TIMEOUT_SECONDS", "2"))
+    if health_timeout <= 0:
+        raise RuntimeError("DWE_HEALTH_TIMEOUT_SECONDS must be positive")
+    latest_migration = discover_migrations()[-1].version
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         nonlocal owned_pool
+        configure_logging()
         auth_config.validate()
         if pool is None:
             database_url = os.environ.get("DATABASE_URL")
@@ -148,9 +160,40 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
 
     @application.middleware("http")
     async def secure_responses(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        started_at = time.perf_counter()
         request_id = uuid4()
         request.state.request_id = request_id
         path = request.url.path
+
+        def finish(response: Response, actor: str = "anonymous") -> Response:
+            duration = time.perf_counter() - started_at
+            route = getattr(request.scope.get("route"), "path", "unmatched")
+            labels = {
+                "method": request.method,
+                "route": route,
+                "status": str(response.status_code),
+            }
+            METRICS.increment("dwe_http_requests_total", labels=labels)
+            METRICS.observe(
+                "dwe_http_request_duration_seconds",
+                duration,
+                labels={"method": request.method, "route": route},
+            )
+            LOGGER.info(
+                "HTTP request completed",
+                extra={
+                    "event": "http_request",
+                    "request_id": str(request_id),
+                    "actor": actor,
+                    "method": request.method,
+                    "route": route,
+                    "status_code": response.status_code,
+                    "duration_ms": round(duration * 1000, 3),
+                },
+            )
+            return _secure_headers(response, request_id, path)
+
+        actor = "anonymous"
         if not _public_path(path):
             token = bearer_token(request)
             principal = auth_config.authenticate(token or "")
@@ -160,7 +203,8 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-                return _secure_headers(auth_response, request_id, path)
+                return finish(auth_response)
+            actor = principal.key_id
             allowed, retry_after = rate_limiter.allow(principal.key_id)
             if not allowed:
                 rate_response = JSONResponse(
@@ -168,20 +212,74 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     headers={"Retry-After": str(retry_after)},
                 )
-                return _secure_headers(rate_response, request_id, path)
+                return finish(rate_response, actor)
             request.state.principal = principal
-        response = await call_next(request)
-        return _secure_headers(response, request_id, path)
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration = time.perf_counter() - started_at
+            METRICS.increment(
+                "dwe_http_requests_total",
+                labels={"method": request.method, "route": "unhandled", "status": "500"},
+            )
+            LOGGER.exception(
+                "HTTP request failed",
+                extra={
+                    "event": "http_request_error",
+                    "request_id": str(request_id),
+                    "actor": actor,
+                    "method": request.method,
+                    "duration_ms": round(duration * 1000, 3),
+                },
+            )
+            raise
+        return finish(response, actor)
 
     @application.get("/", include_in_schema=False)
     async def index() -> FileResponse:
         return FileResponse(UI_DIR / "index.html")
 
+    @application.get("/api/health/live")
+    async def liveness() -> dict[str, str]:
+        return {"status": "alive"}
+
+    async def readiness_response(request: Request) -> Response:
+        try:
+            async with asyncio.timeout(health_timeout):
+                async with _pool(request).acquire() as connection:
+                    database_time = await connection.fetchval("select now()")
+                    migration = await connection.fetchval(
+                        "select version from schema_migrations order by version desc limit 1"
+                    )
+            if migration != latest_migration:
+                return JSONResponse(
+                    {"status": "not_ready", "reason": "schema_migration_mismatch"},
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return JSONResponse(
+                {
+                    "status": "ready",
+                    "database": "ok",
+                    "database_time": str(database_time),
+                    "schema_version": str(migration),
+                }
+            )
+        except Exception:
+            LOGGER.warning(
+                "readiness check failed", exc_info=True, extra={"event": "readiness_failed"}
+            )
+            return JSONResponse(
+                {"status": "not_ready", "reason": "database_unavailable"},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
     @application.get("/api/health")
-    async def health(request: Request) -> dict[str, str]:
-        async with _pool(request).acquire() as connection:
-            await connection.fetchval("select 1")
-        return {"status": "ok"}
+    async def health(request: Request) -> Response:
+        return await readiness_response(request)
+
+    @application.get("/api/health/ready")
+    async def readiness(request: Request) -> Response:
+        return await readiness_response(request)
 
     @application.get("/api/session")
     async def session(request: Request) -> dict[str, str]:
@@ -202,6 +300,23 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
     async def stats(request: Request) -> Any:
         require_role(request, "viewer")
         return jsonable_encoder(asdict(await get_execution_stats(_pool(request))))
+
+    @application.get("/api/workers")
+    async def workers(request: Request) -> Any:
+        require_role(request, "viewer")
+        return jsonable_encoder(
+            [asdict(worker) for worker in await list_worker_heartbeats(_pool(request))]
+        )
+
+    @application.get("/metrics", include_in_schema=False)
+    async def metrics(request: Request) -> Response:
+        require_role(request, "admin")
+        gauges = await get_operational_gauges(_pool(request))
+        gauges["dwe_build_info"] = 1
+        return Response(
+            METRICS.render(gauges=gauges),
+            headers={"Content-Type": "text/plain; version=0.0.4; charset=utf-8"},
+        )
 
     @application.get("/api/audit")
     async def audit_records(
