@@ -1,0 +1,153 @@
+import json
+import os
+from datetime import timedelta
+from uuid import uuid4
+
+import pytest
+
+from engine.persistence import (
+    create_pool,
+    lease_task,
+    register_workflow_definition,
+    start_workflow,
+)
+from engine.persistence.migrations import migrate
+from engine.runtime.serialization import JSONValue
+from engine.sdk import WorkflowContext, workflow
+
+DATABASE_URL = os.environ.get("DWE_TEST_DATABASE_URL")
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        DATABASE_URL is None,
+        reason="DWE_TEST_DATABASE_URL is required for PostgreSQL integration tests",
+    ),
+]
+
+
+@workflow(version=1, name="lease-test")
+async def lease_workflow(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    del ctx
+    return value
+
+
+async def test_workflow_task_lease_is_exclusive_and_does_not_append_history() -> None:
+    assert DATABASE_URL is not None
+    await migrate(DATABASE_URL)
+    pool = await create_pool(DATABASE_URL)
+    try:
+        await register_workflow_definition(pool, lease_workflow)
+        started = await start_workflow(
+            pool,
+            workflow_type=lease_workflow.name,
+            definition_version=lease_workflow.version,
+            workflow_input="input",
+            queue_name="lease-workflow-queue",
+        )
+
+        leased = await lease_task(
+            pool,
+            task_type="workflow",
+            queue_name="lease-workflow-queue",
+            lease_duration=timedelta(seconds=15),
+        )
+        duplicate = await lease_task(
+            pool,
+            task_type="workflow",
+            queue_name="lease-workflow-queue",
+        )
+
+        assert leased is not None
+        assert leased.workflow_id == started.workflow_id
+        assert leased.task_type == "workflow"
+        assert leased.lease_token is not None
+        assert leased.lease_expires_at > leased.leased_at
+        assert duplicate is None
+
+        async with pool.acquire() as connection:
+            event_types = await connection.fetch(
+                """
+                select event_type
+                from history_events
+                where workflow_id = $1
+                order by seq
+                """,
+                started.workflow_id,
+            )
+        assert [row["event_type"] for row in event_types] == ["WorkflowExecutionStarted"]
+    finally:
+        await pool.close()
+
+
+async def test_activity_lease_appends_started_event_in_same_transition() -> None:
+    assert DATABASE_URL is not None
+    await migrate(DATABASE_URL)
+    pool = await create_pool(DATABASE_URL)
+    entity_id = uuid4()
+    try:
+        await register_workflow_definition(pool, lease_workflow)
+        started = await start_workflow(
+            pool,
+            workflow_type=lease_workflow.name,
+            definition_version=lease_workflow.version,
+            workflow_input=None,
+            queue_name="activity-setup-workflow-queue",
+        )
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                """
+                insert into history_events (
+                  workflow_id, seq, event_type, command_id, entity_id, attributes
+                ) values ($1, 2, 'ActivityScheduled', 0, $2, $3::jsonb)
+                """,
+                started.workflow_id,
+                entity_id,
+                json.dumps({"activity_type": "lease-activity", "fingerprint": "test"}),
+            )
+            await connection.execute(
+                "update workflow_executions set next_seq = 3 where id = $1",
+                started.workflow_id,
+            )
+            await connection.execute(
+                """
+                insert into tasks (
+                  id, workflow_id, task_type, queue_name, entity_id, command_id,
+                  input, start_to_close_timeout
+                ) values ($1, $2, 'activity', 'lease-activity-queue', $3, 0,
+                          '{}'::jsonb, interval '20 seconds')
+                """,
+                uuid4(),
+                started.workflow_id,
+                entity_id,
+            )
+
+        leased = await lease_task(
+            pool,
+            task_type="activity",
+            queue_name="lease-activity-queue",
+            lease_duration=timedelta(seconds=10),
+        )
+
+        assert leased is not None
+        assert leased.entity_id == entity_id
+        assert leased.start_to_close_deadline is not None
+        assert leased.start_to_close_deadline > leased.lease_expires_at
+        async with pool.acquire() as connection:
+            execution_seq = await connection.fetchval(
+                "select next_seq from workflow_executions where id = $1", started.workflow_id
+            )
+            started_event = await connection.fetchrow(
+                """
+                select * from history_events
+                where workflow_id = $1 and event_type = 'ActivityStarted'
+                """,
+                started.workflow_id,
+            )
+        assert execution_seq == 4
+        assert started_event is not None
+        assert started_event["seq"] == 3
+        assert started_event["entity_id"] == entity_id
+        assert json.loads(started_event["attributes"])["attempt"] == 1
+    finally:
+        await pool.close()
