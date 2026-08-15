@@ -8,7 +8,7 @@ from engine.persistence.migrations import MigrationError, discover_migrations
 def test_discovers_ordered_migrations() -> None:
     migrations = discover_migrations()
 
-    assert [migration.version for migration in migrations] == ["0001", "0002"]
+    assert [migration.version for migration in migrations] == ["0001", "0002", "0003"]
     assert migrations[0].name == "initial"
     assert "create table workflow_executions" in migrations[0].sql
     assert len(migrations[0].checksum) == 64

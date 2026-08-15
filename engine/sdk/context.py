@@ -58,7 +58,9 @@ class WorkflowContext:
         definition: ActivityDefinition,
         *args: JSONValue,
         retry: RetryPolicy | None = None,
+        schedule_to_start: timedelta | None = None,
         start_to_close: timedelta | None = None,
+        heartbeat_timeout: timedelta | None = None,
         **kwargs: JSONValue,
     ) -> JSONValue:
         command_id = self._next_command_id
@@ -68,17 +70,30 @@ class WorkflowContext:
             "args": clone_json(list(args)),
             "kwargs": clone_json(kwargs),
         }
+        schedule_to_start_seconds = (
+            schedule_to_start.total_seconds() if schedule_to_start is not None else None
+        )
         start_to_close_seconds = (
             start_to_close.total_seconds() if start_to_close is not None else None
         )
-        if start_to_close_seconds is not None and start_to_close_seconds <= 0:
-            raise ValueError("start_to_close must be positive")
+        heartbeat_timeout_seconds = (
+            heartbeat_timeout.total_seconds() if heartbeat_timeout is not None else None
+        )
+        for option_name, seconds in (
+            ("schedule_to_start", schedule_to_start_seconds),
+            ("start_to_close", start_to_close_seconds),
+            ("heartbeat_timeout", heartbeat_timeout_seconds),
+        ):
+            if seconds is not None and seconds <= 0:
+                raise ValueError(f"{option_name} must be positive")
         identity: dict[str, JSONValue] = {
             "command_type": "activity",
             "activity_type": definition.name,
             "input": command_input,
             "retry_policy": policy.to_json(),
+            "schedule_to_start_seconds": schedule_to_start_seconds,
             "start_to_close_seconds": start_to_close_seconds,
+            "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
         }
         command_fingerprint = fingerprint(identity)
         scheduled = self._history.scheduled.get(command_id)
@@ -91,7 +106,9 @@ class WorkflowContext:
                     activity_type=definition.name,
                     input=command_input,
                     retry_policy=policy.to_json(),
+                    schedule_to_start_seconds=schedule_to_start_seconds,
                     start_to_close_seconds=start_to_close_seconds,
+                    heartbeat_timeout_seconds=heartbeat_timeout_seconds,
                     fingerprint=command_fingerprint,
                 )
             )

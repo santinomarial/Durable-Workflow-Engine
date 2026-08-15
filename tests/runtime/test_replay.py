@@ -1,3 +1,4 @@
+from datetime import timedelta
 from uuid import UUID
 
 import pytest
@@ -42,7 +43,9 @@ def scheduled(seq: int, command: ScheduleActivity) -> HistoryEvent:
             "fingerprint": command.fingerprint,
             "input": command.input,
             "retry_policy": command.retry_policy,
+            "schedule_to_start_seconds": command.schedule_to_start_seconds,
             "start_to_close_seconds": command.start_to_close_seconds,
+            "heartbeat_timeout_seconds": command.heartbeat_timeout_seconds,
         },
         command_id=command.command_id,
         entity_id=command.entity_id,
@@ -147,6 +150,48 @@ async def test_replay_reports_changed_command_fingerprint() -> None:
             workflow_input="hello",
             history=(started(), changed),
         )
+
+
+@workflow(version=1)
+async def timeout_workflow(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    return await ctx.activity(
+        uppercase,
+        value,
+        schedule_to_start=timedelta(seconds=5),
+        start_to_close=timedelta(seconds=10),
+        heartbeat_timeout=timedelta(seconds=2),
+    )
+
+
+async def test_activity_timeout_options_are_fingerprinted() -> None:
+    replay = await replay_workflow(
+        timeout_workflow,
+        workflow_id=WORKFLOW_ID,
+        workflow_input="hello",
+        history=(started(),),
+    )
+    command = replay.commands[0]
+
+    assert command.schedule_to_start_seconds == 5
+    assert command.start_to_close_seconds == 10
+    assert command.heartbeat_timeout_seconds == 2
+
+
+@workflow(version=1)
+async def invalid_timeout_workflow(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    return await ctx.activity(uppercase, value, start_to_close=timedelta(0))
+
+
+async def test_activity_rejects_nonpositive_timeout() -> None:
+    replay = await replay_workflow(
+        invalid_timeout_workflow,
+        workflow_id=WORKFLOW_ID,
+        workflow_input="hello",
+        history=(started(),),
+    )
+
+    assert replay.status is ReplayStatus.FAILED
+    assert replay.failure == {"type": "ValueError", "message": "start_to_close must be positive"}
 
 
 async def test_replay_rejects_unvisited_historical_command() -> None:

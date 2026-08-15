@@ -243,7 +243,9 @@ async def _append_activity_command(
             "fingerprint": command.fingerprint,
             "input": command.input,
             "retry_policy": command.retry_policy,
+            "schedule_to_start_seconds": command.schedule_to_start_seconds,
             "start_to_close_seconds": command.start_to_close_seconds,
+            "heartbeat_timeout_seconds": command.heartbeat_timeout_seconds,
             "idempotency_key": str(command.entity_id),
         }
     )
@@ -271,9 +273,16 @@ async def _append_activity_command(
         """
         insert into tasks (
           id, workflow_id, task_type, queue_name, entity_id, command_id,
-          input, start_to_close_timeout
-        ) values ($1, $2, 'activity', $3, $4, $5, $6::jsonb,
-                  $7::double precision * interval '1 second')
+          input, schedule_to_start_deadline, schedule_to_start_timeout,
+          start_to_close_timeout, heartbeat_timeout
+        ) values (
+          $1, $2, 'activity', $3, $4, $5, $6::jsonb,
+          case when $7::double precision is null then null
+            else now() + $7 * interval '1 second' end,
+          $7 * interval '1 second',
+          $8::double precision * interval '1 second',
+          $9::double precision * interval '1 second'
+        )
         """,
         uuid4(),
         workflow_id,
@@ -281,7 +290,9 @@ async def _append_activity_command(
         command.entity_id,
         command.command_id,
         task_input,
+        command.schedule_to_start_seconds,
         command.start_to_close_seconds,
+        command.heartbeat_timeout_seconds,
     )
 
 
@@ -518,7 +529,8 @@ async def fail_activity(
     async with pool.acquire() as connection, connection.transaction():
         locked_task = await connection.fetchrow(
             """
-            select attempt, queue_name, input, start_to_close_timeout, heartbeat_timeout
+            select attempt, queue_name, input, schedule_to_start_timeout,
+                   start_to_close_timeout, heartbeat_timeout
             from tasks
             where id = $1 and status = 'leased' and lease_token = $2
             for update
@@ -582,8 +594,13 @@ async def fail_activity(
                 """
                 insert into tasks (
                   id, workflow_id, task_type, queue_name, entity_id, command_id,
-                  attempt, input, visible_at, start_to_close_timeout, heartbeat_timeout
-                ) values ($1, $2, 'activity', $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+                  attempt, input, visible_at, schedule_to_start_deadline,
+                  schedule_to_start_timeout, start_to_close_timeout, heartbeat_timeout
+                ) values (
+                  $1, $2, 'activity', $3, $4, $5, $6, $7::jsonb, $8,
+                  case when $9::interval is null then null else $8::timestamptz + $9 end,
+                  $9, $10, $11
+                )
                 """,
                 uuid4(),
                 task.workflow_id,
@@ -593,6 +610,7 @@ async def fail_activity(
                 task.attempt + 1,
                 locked_task["input"],
                 next_visible_at,
+                locked_task["schedule_to_start_timeout"],
                 locked_task["start_to_close_timeout"],
                 locked_task["heartbeat_timeout"],
             )

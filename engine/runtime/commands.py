@@ -15,5 +15,7 @@ class ScheduleActivity:
     activity_type: str
     input: dict[str, JSONValue]
     retry_policy: dict[str, JSONValue]
+    schedule_to_start_seconds: float | None
     start_to_close_seconds: float | None
+    heartbeat_timeout_seconds: float | None
     fingerprint: str
