@@ -10,7 +10,12 @@ from engine.persistence.database import Pool
 from engine.runtime.serialization import canonical_json
 
 
-async def fire_due_timer(pool: Pool, *, queue_name: str | None = None) -> bool:
+async def fire_due_timer(
+    pool: Pool,
+    *,
+    queue_name: str | None = None,
+    clock_time: datetime | None = None,
+) -> bool:
     """Atomically fire at most one due timer and wake its workflow."""
     async with pool.acquire() as connection, connection.transaction():
         timer = await connection.fetchrow(
@@ -20,7 +25,7 @@ async def fire_due_timer(pool: Pool, *, queue_name: str | None = None) -> bool:
             join workflow_executions e on e.id = t.workflow_id
             where t.task_type = 'timer'
               and t.status = 'pending'
-              and t.visible_at <= now()
+              and t.visible_at <= coalesce($2::timestamptz, now())
               and e.status = 'running'
               and e.cancellation_requested_at is null
               and ($1::text is null or t.queue_name = $1)
@@ -29,6 +34,7 @@ async def fire_due_timer(pool: Pool, *, queue_name: str | None = None) -> bool:
             limit 1
             """,
             queue_name,
+            clock_time,
         )
         if timer is None:
             return False
