@@ -1,5 +1,7 @@
 # Durable Workflow Engine
 
+[![CI](https://github.com/santinomarial/Durable-Workflow-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/santinomarial/Durable-Workflow-Engine/actions/workflows/ci.yml)
+
 A minimal durable-execution engine built with Python, asyncio, and PostgreSQL.
 
 The project reconstructs workflow state by deterministically replaying an
