@@ -18,6 +18,7 @@ migration compatibility remain explicit release requirements.
 - Indexed JSON search attributes with API filtering and operations-console editing.
 - Durable pause/resume, dead-letter inspection, and linked retry-as-new recovery.
 - Timezone-aware durable cron schedules with overlap policies and bounded backfills.
+- Replay-native child workflows with atomic start, result propagation, and recursive parent-close policy.
 
 ## [0.1.0] - 2026-08-15
 

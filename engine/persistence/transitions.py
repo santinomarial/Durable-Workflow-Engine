@@ -16,7 +16,12 @@ from uuid import UUID, uuid4
 from engine.persistence.audit import AuditContext, record_api_audit
 from engine.persistence.database import Connection, Pool
 from engine.persistence.leasing import LeasedTask, StaleLeaseError
-from engine.runtime.commands import RecordMarker, ScheduleActivity, ScheduleTimer
+from engine.runtime.commands import (
+    RecordMarker,
+    ScheduleActivity,
+    ScheduleTimer,
+    StartChildWorkflow,
+)
 from engine.runtime.definitions import WorkflowDefinition
 from engine.runtime.history import HistoryEvent
 from engine.runtime.replay import ReplayResult, ReplayStatus
@@ -470,7 +475,10 @@ async def terminate_workflow(
     """Atomically terminate a running workflow and invalidate all outstanding work."""
     async with pool.acquire() as connection, connection.transaction():
         execution = await connection.fetchrow(
-            "select status, next_seq from workflow_executions where id = $1 for update",
+            """
+            select status, next_seq, parent_workflow_id
+            from workflow_executions where id = $1 for update
+            """,
             workflow_id,
         )
         if execution is None:
@@ -487,6 +495,7 @@ async def terminate_workflow(
         if execution["status"] != "running":
             raise TerminalWorkflowError(f"workflow {workflow_id} is {execution['status']}")
         next_seq = cast(int, execution["next_seq"])
+        await _terminate_descendants(connection, parent_workflow_id=workflow_id)
         next_seq = await _cancel_pending_timers(
             connection,
             workflow_id=workflow_id,
@@ -517,6 +526,13 @@ async def terminate_workflow(
             where workflow_id = $1 and status in ('pending', 'leased')
             """,
             workflow_id,
+        )
+        await _notify_parent_of_child_terminal(
+            connection,
+            child_workflow_id=workflow_id,
+            parent_workflow_id=cast(UUID | None, execution["parent_workflow_id"]),
+            status="terminated",
+            payload={"reason": reason},
         )
         await record_api_audit(
             connection,
@@ -799,6 +815,201 @@ async def _append_marker_command(
     )
 
 
+async def _append_child_workflow_command(
+    connection: Connection,
+    *,
+    workflow_id: UUID,
+    seq: int,
+    command: StartChildWorkflow,
+    parent_queue_name: str,
+) -> None:
+    child_queue = command.queue_name or parent_queue_name
+    definition_exists = await connection.fetchval(
+        """
+        select exists (
+          select 1 from workflow_definitions
+          where workflow_type = $1 and version = $2
+        )
+        """,
+        command.workflow_type,
+        command.definition_version,
+    )
+    if definition_exists is not True:
+        raise DefinitionNotRegisteredError(
+            f"child workflow {command.workflow_type!r} version "
+            f"{command.definition_version} is not registered"
+        )
+    started_at = datetime.now(UTC)
+    child_attributes: dict[str, JSONValue] = {
+        "dwe.parent_workflow_id": str(workflow_id),
+        "dwe.parent_command_id": command.command_id,
+    }
+    await connection.execute(
+        """
+        insert into history_events (
+          workflow_id, seq, event_type, command_id, entity_id, attributes
+        ) values ($1, $2, 'ChildWorkflowStarted', $3, $4, $5::jsonb)
+        """,
+        workflow_id,
+        seq,
+        command.command_id,
+        command.child_workflow_id,
+        canonical_json(
+            {
+                "workflow_type": command.workflow_type,
+                "definition_version": command.definition_version,
+                "input": command.input,
+                "queue_name": child_queue,
+                "parent_close_policy": command.parent_close_policy,
+                "fingerprint": command.fingerprint,
+            }
+        ),
+    )
+    await connection.execute(
+        """
+        insert into workflow_executions (
+          id, workflow_type, definition_version, input, next_seq, queue_name,
+          created_at, search_attributes, parent_workflow_id, parent_command_id,
+          parent_close_policy
+        ) values ($1, $2, $3, $4::jsonb, 2, $5, $6, $7::jsonb, $8, $9, $10)
+        """,
+        command.child_workflow_id,
+        command.workflow_type,
+        command.definition_version,
+        canonical_json(command.input),
+        child_queue,
+        started_at,
+        canonical_json(child_attributes),
+        workflow_id,
+        command.command_id,
+        command.parent_close_policy,
+    )
+    await connection.execute(
+        """
+        insert into history_events (workflow_id, seq, event_type, attributes)
+        values ($1, 1, 'WorkflowExecutionStarted', $2::jsonb)
+        """,
+        command.child_workflow_id,
+        canonical_json(
+            {
+                "workflow_type": command.workflow_type,
+                "definition_version": command.definition_version,
+                "input": command.input,
+                "search_attributes": child_attributes,
+                "started_at": started_at.isoformat(),
+                "parent_workflow_id": str(workflow_id),
+                "parent_command_id": command.command_id,
+            }
+        ),
+    )
+    await connection.execute(
+        """
+        insert into tasks (id, workflow_id, task_type, queue_name)
+        values ($1, $2, 'workflow', $3)
+        """,
+        uuid4(),
+        command.child_workflow_id,
+        child_queue,
+    )
+
+
+async def _notify_parent_of_child_terminal(
+    connection: Connection,
+    *,
+    child_workflow_id: UUID,
+    parent_workflow_id: UUID | None,
+    status: str,
+    payload: JSONValue,
+) -> None:
+    if parent_workflow_id is None:
+        return
+    parent = await connection.fetchrow(
+        "select status, next_seq, queue_name from workflow_executions where id = $1 for update",
+        parent_workflow_id,
+    )
+    if parent is None or parent["status"] != "running":
+        return
+    event_types = {
+        "completed": "ChildWorkflowCompleted",
+        "failed": "ChildWorkflowFailed",
+        "terminated": "ChildWorkflowTerminated",
+    }
+    event_type = event_types[status]
+    attribute_name = "result" if status == "completed" else "failure"
+    next_seq = cast(int, parent["next_seq"])
+    await connection.execute(
+        """
+        insert into history_events (
+          workflow_id, seq, event_type, entity_id, attributes
+        ) values ($1, $2, $3, $4, $5::jsonb)
+        """,
+        parent_workflow_id,
+        next_seq,
+        event_type,
+        child_workflow_id,
+        canonical_json({attribute_name: clone_json(payload)}),
+    )
+    await connection.execute(
+        "update workflow_executions set next_seq = $2 where id = $1",
+        parent_workflow_id,
+        next_seq + 1,
+    )
+    await connection.execute(
+        """
+        insert into tasks (id, workflow_id, task_type, queue_name)
+        values ($1, $2, 'workflow', $3)
+        """,
+        uuid4(),
+        parent_workflow_id,
+        parent["queue_name"],
+    )
+
+
+async def _terminate_descendants(connection: Connection, *, parent_workflow_id: UUID) -> None:
+    children = await connection.fetch(
+        """
+        select id, next_seq
+        from workflow_executions
+        where parent_workflow_id = $1 and parent_close_policy = 'terminate'
+          and status = 'running'
+        order by created_at, id
+        for update
+        """,
+        parent_workflow_id,
+    )
+    for child in children:
+        child_id = cast(UUID, child["id"])
+        await _terminate_descendants(connection, parent_workflow_id=child_id)
+        next_seq = cast(int, child["next_seq"])
+        await connection.execute(
+            """
+            insert into history_events (workflow_id, seq, event_type, attributes)
+            values ($1, $2, 'WorkflowExecutionTerminated', $3::jsonb)
+            """,
+            child_id,
+            next_seq,
+            canonical_json({"reason": "parent workflow closed", "cause": "parent_close_policy"}),
+        )
+        await connection.execute(
+            """
+            update workflow_executions
+            set status = 'terminated', next_seq = $2, closed_at = now(),
+                failure = $3::jsonb
+            where id = $1
+            """,
+            child_id,
+            next_seq + 1,
+            canonical_json({"reason": "parent workflow closed"}),
+        )
+        await connection.execute(
+            """
+            update tasks set status = 'dead', completed_at = now()
+            where workflow_id = $1 and status in ('pending', 'leased')
+            """,
+            child_id,
+        )
+
+
 async def commit_workflow_replay(
     pool: Pool,
     *,
@@ -824,7 +1035,8 @@ async def commit_workflow_replay(
             raise StaleLeaseError(f"workflow task {task.id} does not hold the current lease")
         execution = await connection.fetchrow(
             """
-            select status, next_seq, cancellation_requested_at, cancellation_reason
+            select status, next_seq, cancellation_requested_at, cancellation_reason,
+                   parent_workflow_id
             from workflow_executions
             where id = $1
             for update
@@ -848,6 +1060,7 @@ async def commit_workflow_replay(
                 next_seq=next_seq,
                 reason="workflow cancellation requested",
             )
+            await _terminate_descendants(connection, parent_workflow_id=task.workflow_id)
             await connection.execute(
                 """
                 insert into history_events (workflow_id, seq, event_type, attributes)
@@ -879,6 +1092,13 @@ async def commit_workflow_replay(
                 task.workflow_id,
                 task.id,
             )
+            await _notify_parent_of_child_terminal(
+                connection,
+                child_workflow_id=task.workflow_id,
+                parent_workflow_id=cast(UUID | None, execution["parent_workflow_id"]),
+                status="terminated",
+                payload={"reason": cast(str | None, execution["cancellation_reason"])},
+            )
         elif replay.status is ReplayStatus.COMMANDS:
             if not replay.commands:
                 raise TransitionError("commands replay result contains no commands")
@@ -908,6 +1128,14 @@ async def commit_workflow_replay(
                         command=command,
                     )
                     marker_recorded = True
+                elif isinstance(command, StartChildWorkflow):
+                    await _append_child_workflow_command(
+                        connection,
+                        workflow_id=task.workflow_id,
+                        seq=next_seq,
+                        command=command,
+                        parent_queue_name=cast(str, locked_task["queue_name"]),
+                    )
                 next_seq += 1
             if marker_recorded:
                 await connection.execute(
@@ -928,6 +1156,7 @@ async def commit_workflow_replay(
             completed = replay.status is ReplayStatus.COMPLETED
             event_type = "WorkflowExecutionCompleted" if completed else "WorkflowExecutionFailed"
             payload = replay.result if completed else replay.failure
+            await _terminate_descendants(connection, parent_workflow_id=task.workflow_id)
             next_seq = await _cancel_pending_timers(
                 connection,
                 workflow_id=task.workflow_id,
@@ -969,6 +1198,13 @@ async def commit_workflow_replay(
                 """,
                 task.workflow_id,
                 task.id,
+            )
+            await _notify_parent_of_child_terminal(
+                connection,
+                child_workflow_id=task.workflow_id,
+                parent_workflow_id=cast(UUID | None, execution["parent_workflow_id"]),
+                status="completed" if completed else "failed",
+                payload=payload,
             )
         elif replay.status is not ReplayStatus.BLOCKED:
             raise TransitionError(f"unsupported replay status: {replay.status}")

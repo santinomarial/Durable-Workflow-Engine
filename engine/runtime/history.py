@@ -7,11 +7,16 @@ from uuid import UUID
 
 from engine.runtime.serialization import JSONValue
 
-SCHEDULE_EVENT_TYPES = frozenset({"ActivityScheduled", "TimerStarted", "MarkerRecorded"})
+SCHEDULE_EVENT_TYPES = frozenset(
+    {"ActivityScheduled", "TimerStarted", "MarkerRecorded", "ChildWorkflowStarted"}
+)
 ACTIVITY_TERMINAL_EVENT_TYPES = frozenset(
     {"ActivityCompleted", "ActivityFailed", "ActivityTimedOut"}
 )
 TIMER_TERMINAL_EVENT_TYPES = frozenset({"TimerFired", "TimerCanceled"})
+CHILD_TERMINAL_EVENT_TYPES = frozenset(
+    {"ChildWorkflowCompleted", "ChildWorkflowFailed", "ChildWorkflowTerminated"}
+)
 WORKFLOW_TERMINAL_EVENT_TYPES = frozenset(
     {
         "WorkflowExecutionCompleted",
@@ -44,6 +49,7 @@ class HistoryIndex:
         self.scheduled_entities: dict[UUID, HistoryEvent] = {}
         self.activity_terminal: dict[UUID, HistoryEvent] = {}
         self.timer_terminal: dict[UUID, HistoryEvent] = {}
+        self.child_terminal: dict[UUID, HistoryEvent] = {}
         self.signals: list[HistoryEvent] = []
         self.cancellation_requested: HistoryEvent | None = None
         self.workflow_terminal: HistoryEvent | None = None
@@ -110,6 +116,21 @@ class HistoryIndex:
                         f"timer {event.entity_id} has multiple terminal events"
                     )
                 self.timer_terminal[event.entity_id] = event
+            if event.event_type in CHILD_TERMINAL_EVENT_TYPES:
+                if event.entity_id is None:
+                    raise InvalidHistoryError(
+                        f"{event.event_type} at sequence {event.seq} lacks child identity"
+                    )
+                scheduled = self.scheduled_entities.get(event.entity_id)
+                if scheduled is None or scheduled.event_type != "ChildWorkflowStarted":
+                    raise InvalidHistoryError(
+                        f"{event.event_type} for child {event.entity_id} has no prior start"
+                    )
+                if event.entity_id in self.child_terminal:
+                    raise InvalidHistoryError(
+                        f"child {event.entity_id} has multiple terminal events"
+                    )
+                self.child_terminal[event.entity_id] = event
             if event.event_type == "SignalReceived":
                 name = event.attributes.get("name")
                 if not isinstance(name, str) or not name:

@@ -8,8 +8,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid5
 
-from engine.runtime.commands import Command, RecordMarker, ScheduleActivity, ScheduleTimer
-from engine.runtime.definitions import ActivityDefinition
+from engine.runtime.commands import (
+    Command,
+    RecordMarker,
+    ScheduleActivity,
+    ScheduleTimer,
+    StartChildWorkflow,
+)
+from engine.runtime.definitions import ActivityDefinition, WorkflowDefinition
 from engine.runtime.history import HistoryIndex
 from engine.runtime.serialization import JSONValue, clone_json, fingerprint
 from engine.sdk.policies import RetryPolicy
@@ -41,6 +47,13 @@ class SignalTimeoutError(TimeoutError):
         super().__init__(f"timed out waiting for signal {signal_name!r}")
 
 
+class ChildWorkflowError(RuntimeError):
+    def __init__(self, workflow_type: str, failure: JSONValue) -> None:
+        self.workflow_type = workflow_type
+        self.failure = failure
+        super().__init__(f"child workflow {workflow_type!r} failed: {failure!r}")
+
+
 class _ReplaySuspended(BaseException):
     pass
 
@@ -69,6 +82,21 @@ class ActivityCall:
     def __await__(self) -> Generator[object, None, JSONValue]:
         async def resolve() -> JSONValue:
             return self.context._evaluate_activity(self)
+
+        return resolve().__await__()
+
+
+@dataclass(slots=True)
+class ChildWorkflowCall:
+    context: WorkflowContext
+    definition: WorkflowDefinition
+    input: JSONValue
+    queue_name: str | None
+    parent_close_policy: str
+
+    def __await__(self) -> Generator[object, None, JSONValue]:
+        async def resolve() -> JSONValue:
+            return self.context._evaluate_child_workflow(self)
 
         return resolve().__await__()
 
@@ -108,6 +136,77 @@ class WorkflowContext:
             schedule_to_start=schedule_to_start,
             start_to_close=start_to_close,
             heartbeat_timeout=heartbeat_timeout,
+        )
+
+    def child_workflow(
+        self,
+        definition: WorkflowDefinition,
+        input: JSONValue = None,
+        *,
+        queue_name: str | None = None,
+        parent_close_policy: str = "terminate",
+    ) -> ChildWorkflowCall:
+        """Start and await a pinned child workflow through parent history."""
+        if parent_close_policy not in ("terminate", "abandon"):
+            raise ValueError("parent_close_policy must be 'terminate' or 'abandon'")
+        if queue_name == "":
+            raise ValueError("child queue_name cannot be empty")
+        return ChildWorkflowCall(
+            context=self,
+            definition=definition,
+            input=clone_json(input),
+            queue_name=queue_name,
+            parent_close_policy=parent_close_policy,
+        )
+
+    def _evaluate_child_workflow(self, call: ChildWorkflowCall) -> JSONValue:
+        if call.context is not self:
+            raise ValueError("child workflow call belongs to a different workflow context")
+        command_id = self._next_command_id
+        self._next_command_id += 1
+        identity: dict[str, JSONValue] = {
+            "command_type": "child_workflow",
+            "workflow_type": call.definition.name,
+            "definition_version": call.definition.version,
+            "input": call.input,
+            "queue_name": call.queue_name,
+            "parent_close_policy": call.parent_close_policy,
+        }
+        command_fingerprint = fingerprint(identity)
+        scheduled = self._history.scheduled.get(command_id)
+        if scheduled is None:
+            child_id = uuid5(ENTITY_NAMESPACE, f"{self._workflow_id}:child:{command_id}")
+            raise _NewCommands(
+                (
+                    StartChildWorkflow(
+                        command_id=command_id,
+                        child_workflow_id=child_id,
+                        workflow_type=call.definition.name,
+                        definition_version=call.definition.version,
+                        input=clone_json(call.input),
+                        queue_name=call.queue_name,
+                        parent_close_policy=call.parent_close_policy,
+                        fingerprint=command_fingerprint,
+                    ),
+                )
+            )
+        if scheduled.event_type != "ChildWorkflowStarted":
+            raise NonDeterminismError(
+                command_id,
+                f"expected child workflow, history contains {scheduled.event_type}",
+            )
+        if scheduled.attributes.get("fingerprint") != command_fingerprint:
+            raise NonDeterminismError(command_id, "child workflow command changed")
+        if scheduled.entity_id is None:
+            raise NonDeterminismError(command_id, "recorded child workflow has no identity")
+        terminal = self._history.child_terminal.get(scheduled.entity_id)
+        if terminal is None:
+            raise _Blocked
+        if terminal.event_type == "ChildWorkflowCompleted":
+            return clone_json(terminal.attributes.get("result"))
+        raise ChildWorkflowError(
+            call.definition.name,
+            clone_json(terminal.attributes.get("failure") or terminal.attributes.get("reason")),
         )
 
     def _derived_marker_value(self, marker_type: str, command_id: int) -> JSONValue:

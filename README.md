@@ -87,8 +87,9 @@ The UI provides status filtering, an execution summary, chronological history,
 activity attempts and retry timing, a command/entity graph, signal and
 cancellation controls, pause/resume with frozen deadlines, safe retry-as-new,
 dead-letter inspection, durable timezone-aware cron schedules and backfills,
-termination, and indexed JSON search attributes with server-side visibility
-filtering. OpenAPI documentation is at `/docs`.
+deterministic child workflows with close-policy propagation, termination, and
+indexed JSON search attributes with server-side visibility filtering. OpenAPI
+documentation is at `/docs`.
 Production authentication is fail closed and uses hashed bearer-key
 configuration with viewer, operator, and administrator roles. See the
 [security guide](docs/security.md) before exposing the control plane.
@@ -269,8 +270,7 @@ uv run pytest
   isolation; authors must keep workflow code deterministic and put I/O in
   activities.
 - Cancellation cannot forcibly stop or undo external work.
-- There are no child workflows, cross-language SDKs, or automatic workflow-code
-  migrations.
+- There are no cross-language SDKs or automatic workflow-code migrations.
 - No software license has been selected.
 
 The detailed design rationale and milestone acceptance criteria remain in the

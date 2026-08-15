@@ -8,6 +8,8 @@ from engine.sdk.activity_context import (
 from engine.sdk.context import (
     ActivityCall,
     ActivityError,
+    ChildWorkflowCall,
+    ChildWorkflowError,
     NonDeterminismError,
     SignalTimeoutError,
     WorkflowContext,
@@ -20,6 +22,8 @@ __all__ = [
     "ActivityCancellationRequested",
     "ActivityError",
     "ActivityExecutionContext",
+    "ChildWorkflowCall",
+    "ChildWorkflowError",
     "NonDeterminismError",
     "RetryPolicy",
     "SignalTimeoutError",

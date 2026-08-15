@@ -309,6 +309,9 @@ function renderMetadata(execution) {
     ["Task queue", execution.queue_name],
     ["History loaded", `${state.history.length.toLocaleString()}${state.historyTruncated ? "+" : ""} events`],
   ];
+  if (execution.parent_workflow_id) items.push(["Parent workflow", shortId(execution.parent_workflow_id)]);
+  if (execution.schedule_id) items.push(["Schedule", shortId(execution.schedule_id)]);
+  if (execution.scheduled_at) items.push(["Scheduled for", formatDate(execution.scheduled_at, true), execution.scheduled_at]);
   $("metadata").replaceChildren(...items.map(([label, value, dateValue]) => {
     const dd = element("dd", { text: value, attrs: { title: value } });
     if (dateValue) dd.setAttribute("data-date", dateValue);
@@ -343,6 +346,12 @@ function deriveOperationalState(execution, history) {
   }
   if (execution.cancellation_requested_at) {
     return { label: "Control request", title: "Cancellation requested", detail: execution.cancellation_reason || "Waiting for the workflow to observe cancellation." };
+  }
+
+  const pendingChild = [...history].reverse().find((event) => event.event_type === "ChildWorkflowStarted"
+    && !relatedTerminal(history, event, ["ChildWorkflowCompleted", "ChildWorkflowFailed", "ChildWorkflowTerminated"]));
+  if (pendingChild) {
+    return { label: "Workflow composition", title: `Waiting for child ${pendingChild.attributes?.workflow_type || "workflow"}`, detail: `Child execution ${shortId(pendingChild.entity_id)} is durably linked to this parent.` };
   }
 
   const last = history.at(-1);

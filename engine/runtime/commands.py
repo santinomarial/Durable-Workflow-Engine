@@ -39,4 +39,16 @@ class RecordMarker:
     fingerprint: str
 
 
-type Command = RecordMarker | ScheduleActivity | ScheduleTimer
+@dataclass(frozen=True, slots=True)
+class StartChildWorkflow:
+    command_id: int
+    child_workflow_id: UUID
+    workflow_type: str
+    definition_version: int
+    input: JSONValue
+    queue_name: str | None
+    parent_close_policy: str
+    fingerprint: str
+
+
+type Command = RecordMarker | ScheduleActivity | ScheduleTimer | StartChildWorkflow

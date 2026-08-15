@@ -94,3 +94,17 @@ a skipped occurrence while another run is open, and `buffer_one` retains one
 coalesced occurrence to start after the active run closes. Pausing a schedule
 does not pause executions it already started. Resuming computes the next future
 cron time; intentional historical runs use the admin-only bounded backfill API.
+
+## Child workflow operations
+
+`ctx.child_workflow` records a deterministic child command in parent history and
+creates the child execution, its initial history, and task in the same database
+transaction. The child pins its own definition version and may use the parent's
+queue or an explicit queue. Its terminal transition appends the corresponding
+child result/failure event to the parent and wakes parent replay atomically.
+
+The default `terminate` parent-close policy recursively terminates open
+descendants and fences their outstanding tasks. `abandon` intentionally leaves
+a child running after the parent closes and should be used only when the child
+owns an independent business lifecycle. Child external effects retain the same
+at-least-once and idempotency requirements as every other activity.

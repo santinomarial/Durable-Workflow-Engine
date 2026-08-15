@@ -33,6 +33,9 @@ class ExecutionSummary:
     retry_of: UUID | None
     schedule_id: UUID | None
     scheduled_at: datetime | None
+    parent_workflow_id: UUID | None
+    parent_command_id: int | None
+    parent_close_policy: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +91,9 @@ def _execution(row: dict[str, object]) -> ExecutionSummary:
         retry_of=cast(UUID | None, row["retry_of"]),
         schedule_id=cast(UUID | None, row["schedule_id"]),
         scheduled_at=cast(datetime | None, row["scheduled_at"]),
+        parent_workflow_id=cast(UUID | None, row["parent_workflow_id"]),
+        parent_command_id=cast(int | None, row["parent_command_id"]),
+        parent_close_policy=cast(str | None, row["parent_close_policy"]),
     )
 
 

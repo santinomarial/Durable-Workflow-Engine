@@ -48,7 +48,7 @@ async def test_api_controls_and_inspects_workflow() -> None:
             health = await client.get("/api/health")
             assert health.json()["status"] == "ready"
             assert health.json()["database"] == "ok"
-            assert health.json()["schema_version"] == "0012"
+            assert health.json()["schema_version"] == "0013"
             assert health.headers["cache-control"] == "no-store"
             assert health.headers["x-content-type-options"] == "nosniff"
             assert health.headers["x-frame-options"] == "DENY"
