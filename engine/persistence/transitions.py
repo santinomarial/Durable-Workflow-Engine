@@ -7,7 +7,9 @@ this module so the engine's central correctness boundary remains auditable.
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -250,6 +252,7 @@ async def _append_activity_command(
             "activity_type": command.activity_type,
             "input": command.input,
             "idempotency_key": str(command.entity_id),
+            "retry_policy": command.retry_policy,
         }
     )
     await connection.execute(
@@ -459,3 +462,143 @@ async def complete_activity(
             task.workflow_id,
             next_seq + 1,
         )
+
+
+def retry_delay(
+    retry_policy: dict[str, JSONValue],
+    *,
+    failed_attempt: int,
+    random_value: float,
+) -> timedelta:
+    """Calculate full-jitter backoff for the next attempt."""
+    if not 0 <= random_value <= 1:
+        raise ValueError("random_value must be between 0 and 1")
+    initial = float(cast(int | float, retry_policy["initial_interval_seconds"]))
+    coefficient = float(cast(int | float, retry_policy["backoff_coefficient"]))
+    maximum_value = retry_policy.get("maximum_interval_seconds")
+    maximum = float(cast(int | float, maximum_value)) if maximum_value is not None else None
+    cap = initial * coefficient ** (failed_attempt - 1)
+    if maximum is not None:
+        cap = min(cap, maximum)
+    return timedelta(seconds=cap * random_value)
+
+
+async def fail_activity(
+    pool: Pool,
+    *,
+    task: LeasedTask,
+    failure: JSONValue,
+    random_value: float | None = None,
+) -> bool:
+    """Record an attempt failure and create a retry, returning whether it is final."""
+    if task.task_type != "activity" or task.entity_id is None or task.command_id is None:
+        raise ValueError("only an activity task can fail an activity")
+    if not isinstance(task.input, dict):
+        raise TypeError("activity task input must be an object")
+    policy_value = task.input.get("retry_policy")
+    if not isinstance(policy_value, dict):
+        raise TypeError("activity task lacks its recorded retry policy")
+    policy = policy_value
+    max_attempts_value = policy.get("max_attempts")
+    if not isinstance(max_attempts_value, int):
+        raise TypeError("activity retry policy has invalid max_attempts")
+    is_final = task.attempt >= max_attempts_value
+    selected_random = random.random() if random_value is None else random_value
+    delay = (
+        timedelta(0)
+        if is_final
+        else retry_delay(
+            policy,
+            failed_attempt=task.attempt,
+            random_value=selected_random,
+        )
+    )
+    next_visible_at = datetime.now(UTC) + delay
+
+    async with pool.acquire() as connection, connection.transaction():
+        locked_task = await connection.fetchrow(
+            """
+            select attempt, queue_name, input, start_to_close_timeout, heartbeat_timeout
+            from tasks
+            where id = $1 and status = 'leased' and lease_token = $2
+            for update
+            """,
+            task.id,
+            task.lease_token,
+        )
+        if locked_task is None:
+            raise StaleLeaseError(f"activity task {task.id} does not hold the current lease")
+        execution = await connection.fetchrow(
+            """
+            select status, next_seq from workflow_executions where id = $1 for update
+            """,
+            task.workflow_id,
+        )
+        if execution is None:
+            raise TransitionError(f"workflow {task.workflow_id} does not exist")
+        if execution["status"] != "running":
+            raise TerminalWorkflowError(f"workflow {task.workflow_id} is {execution['status']}")
+        next_seq = cast(int, execution["next_seq"])
+        await connection.execute(
+            """
+            insert into history_events (
+              workflow_id, seq, event_type, entity_id, attributes
+            ) values ($1, $2, 'ActivityFailed', $3, $4::jsonb)
+            """,
+            task.workflow_id,
+            next_seq,
+            task.entity_id,
+            canonical_json(
+                {
+                    "attempt": task.attempt,
+                    "failure": clone_json(failure),
+                    "final": is_final,
+                    "next_visible_at": next_visible_at.isoformat() if not is_final else None,
+                }
+            ),
+        )
+        await connection.execute(
+            """
+            update tasks
+            set status = $3::task_status, completed_at = now()
+            where id = $1 and status = 'leased' and lease_token = $2
+            """,
+            task.id,
+            task.lease_token,
+            "dead" if is_final else "completed",
+        )
+        if is_final:
+            await connection.execute(
+                """
+                insert into tasks (id, workflow_id, task_type, queue_name)
+                values ($1, $2, 'workflow', $3)
+                """,
+                uuid4(),
+                task.workflow_id,
+                locked_task["queue_name"],
+            )
+        else:
+            await connection.execute(
+                """
+                insert into tasks (
+                  id, workflow_id, task_type, queue_name, entity_id, command_id,
+                  attempt, input, visible_at, start_to_close_timeout, heartbeat_timeout
+                ) values ($1, $2, 'activity', $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+                """,
+                uuid4(),
+                task.workflow_id,
+                locked_task["queue_name"],
+                task.entity_id,
+                task.command_id,
+                task.attempt + 1,
+                locked_task["input"],
+                next_visible_at,
+                locked_task["start_to_close_timeout"],
+                locked_task["heartbeat_timeout"],
+            )
+        await connection.execute(
+            "update workflow_executions set next_seq = $2 where id = $1",
+            task.workflow_id,
+            next_seq + 1,
+        )
+    return is_final

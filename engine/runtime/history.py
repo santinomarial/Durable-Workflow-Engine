@@ -67,7 +67,8 @@ class HistoryIndex:
                         f"{event.event_type} for entity {event.entity_id} "
                         "has no prior activity schedule"
                     )
-                self.activity_terminal[event.entity_id] = event
+                if event.event_type == "ActivityCompleted" or event.attributes.get("final", True):
+                    self.activity_terminal[event.entity_id] = event
 
     def first_unvisited_command(self, next_command_id: int) -> HistoryEvent | None:
         remaining = [

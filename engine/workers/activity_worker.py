@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from datetime import timedelta
 
-from engine.persistence import Pool, complete_activity, lease_task
+from engine.persistence import Pool, complete_activity, fail_activity, lease_task
 from engine.runtime import DefinitionRegistry
 
 
@@ -37,8 +37,16 @@ async def run_activity_task(
         raise TypeError("activity arguments are malformed")
 
     definition = registry.activity(activity_type)
-    result = definition.function(*args, **kwargs)
-    if inspect.isawaitable(result):
-        result = await result
-    await complete_activity(pool, task=task, result=result)
+    try:
+        result = definition.function(*args, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as error:
+        await fail_activity(
+            pool,
+            task=task,
+            failure={"type": type(error).__name__, "message": str(error)},
+        )
+    else:
+        await complete_activity(pool, task=task, result=result)
     return True
