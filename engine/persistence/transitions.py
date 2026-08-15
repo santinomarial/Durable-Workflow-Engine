@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID, uuid4
 
+from engine.persistence.audit import AuditContext, record_api_audit
 from engine.persistence.database import Connection, Pool
 from engine.persistence.leasing import LeasedTask, StaleLeaseError
 from engine.runtime.commands import RecordMarker, ScheduleActivity, ScheduleTimer
@@ -111,6 +112,7 @@ async def start_workflow(
     workflow_input: JSONValue,
     queue_name: str = "default",
     workflow_id: UUID | None = None,
+    audit: AuditContext | None = None,
 ) -> StartedWorkflow:
     """Atomically create an execution, its first event, and its first task."""
     if not workflow_type:
@@ -182,6 +184,17 @@ async def start_workflow(
             execution_id,
             queue_name,
         )
+        await record_api_audit(
+            connection,
+            audit,
+            workflow_id=execution_id,
+            accepted=True,
+            details={
+                "workflow_type": workflow_type,
+                "definition_version": definition_version,
+                "queue_name": queue_name,
+            },
+        )
 
     return StartedWorkflow(execution_id, workflow_type, definition_version)
 
@@ -232,6 +245,7 @@ async def terminate_workflow(
     *,
     workflow_id: UUID,
     reason: str | None = None,
+    audit: AuditContext | None = None,
 ) -> bool:
     """Atomically terminate a running workflow and invalidate all outstanding work."""
     async with pool.acquire() as connection, connection.transaction():
@@ -242,6 +256,13 @@ async def terminate_workflow(
         if execution is None:
             raise TransitionError(f"workflow {workflow_id} does not exist")
         if execution["status"] == "terminated":
+            await record_api_audit(
+                connection,
+                audit,
+                workflow_id=workflow_id,
+                accepted=False,
+                details={"reason": reason, "duplicate": True},
+            )
             return False
         if execution["status"] != "running":
             raise TerminalWorkflowError(f"workflow {workflow_id} is {execution['status']}")
@@ -277,6 +298,13 @@ async def terminate_workflow(
             """,
             workflow_id,
         )
+        await record_api_audit(
+            connection,
+            audit,
+            workflow_id=workflow_id,
+            accepted=True,
+            details={"reason": reason},
+        )
     return True
 
 
@@ -285,6 +313,7 @@ async def request_workflow_cancellation(
     *,
     workflow_id: UUID,
     reason: str | None = None,
+    audit: AuditContext | None = None,
 ) -> bool:
     """Record one cooperative cancellation request and wake workflow replay."""
     async with pool.acquire() as connection, connection.transaction():
@@ -300,6 +329,13 @@ async def request_workflow_cancellation(
         if execution["status"] != "running":
             raise TerminalWorkflowError(f"workflow {workflow_id} is {execution['status']}")
         if execution["cancellation_requested_at"] is not None:
+            await record_api_audit(
+                connection,
+                audit,
+                workflow_id=workflow_id,
+                accepted=False,
+                details={"reason": reason, "duplicate": True},
+            )
             return False
         next_seq = cast(int, execution["next_seq"])
         await connection.execute(
@@ -338,6 +374,13 @@ async def request_workflow_cancellation(
             uuid4(),
             workflow_id,
             execution["queue_name"],
+        )
+        await record_api_audit(
+            connection,
+            audit,
+            workflow_id=workflow_id,
+            accepted=True,
+            details={"reason": reason},
         )
     return True
 

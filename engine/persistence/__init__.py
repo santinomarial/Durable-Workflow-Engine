@@ -1,5 +1,6 @@
 """PostgreSQL persistence and atomic transitions."""
 
+from engine.persistence.audit import AuditContext, AuditRecord, list_api_audit
 from engine.persistence.database import Pool, create_pool
 from engine.persistence.effects import record_idempotent_effect
 from engine.persistence.leasing import (
@@ -39,6 +40,8 @@ from engine.sdk.activity_context import ActivityCancellationRequested
 
 __all__ = [
     "ActivityCancellationRequested",
+    "AuditContext",
+    "AuditRecord",
     "ExecutionStats",
     "ExecutionSummary",
     "HistoryRecord",
@@ -57,6 +60,7 @@ __all__ = [
     "get_history",
     "heartbeat_activity",
     "lease_task",
+    "list_api_audit",
     "list_executions",
     "load_workflow_replay_state",
     "process_activity_timeout",

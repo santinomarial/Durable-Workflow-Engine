@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import importlib
 import json
 import logging
 import os
+import secrets
 from dataclasses import asdict
 from typing import cast
 from uuid import UUID
@@ -137,9 +139,33 @@ def _database_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _run_auth_key(args: argparse.Namespace) -> int:
+    token = secrets.token_urlsafe(32)
+    key_id = cast(str, args.key_id)
+    role = cast(str, args.role)
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    print(
+        json.dumps(
+            {
+                "key_id": key_id,
+                "role": role,
+                "token": token,
+                "configuration": f"{key_id}:{role}:{digest}",
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engine")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    auth_parser = subparsers.add_parser(
+        "auth-key", help="generate a bearer token and its SHA-256 configuration entry"
+    )
+    auth_parser.add_argument("--key-id", required=True)
+    auth_parser.add_argument("--role", choices=("viewer", "operator", "admin"), required=True)
     replay_parser = subparsers.add_parser(
         "replay-check", help="check a persisted history against candidate workflow code"
     )
@@ -179,6 +205,8 @@ def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == "auth-key":
+        raise SystemExit(_run_auth_key(args))
     if args.command == "replay-check":
         raise SystemExit(asyncio.run(_run_replay_check(args)))
     if args.command == "register":

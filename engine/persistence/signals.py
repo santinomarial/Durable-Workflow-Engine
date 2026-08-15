@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import cast
 from uuid import UUID, uuid4
 
+from engine.persistence.audit import AuditContext, record_api_audit
 from engine.persistence.database import Pool
 from engine.persistence.transitions import TerminalWorkflowError, TransitionError
 from engine.runtime.serialization import JSONValue, canonical_json, clone_json
@@ -17,6 +18,7 @@ async def send_signal(
     signal_id: str,
     name: str,
     payload: JSONValue = None,
+    audit: AuditContext | None = None,
 ) -> bool:
     """Append a caller-deduplicated signal and wake replay in one transaction."""
     if not signal_id:
@@ -45,6 +47,13 @@ async def send_signal(
             signal_id,
         )
         if duplicate is True:
+            await record_api_audit(
+                connection,
+                audit,
+                workflow_id=workflow_id,
+                accepted=False,
+                details={"signal_id": signal_id, "name": name, "duplicate": True},
+            )
             return False
         if execution["status"] != "running":
             raise TerminalWorkflowError(f"workflow {workflow_id} is {execution['status']}")
@@ -74,5 +83,12 @@ async def send_signal(
             "update workflow_executions set next_seq = $2 where id = $1",
             workflow_id,
             next_seq + 1,
+        )
+        await record_api_audit(
+            connection,
+            audit,
+            workflow_id=workflow_id,
+            accepted=True,
+            details={"signal_id": signal_id, "name": name},
         )
     return True

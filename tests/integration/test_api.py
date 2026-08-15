@@ -3,7 +3,7 @@ import os
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from engine.api import create_app
+from engine.api import APIKey, AuthConfig, create_app
 from engine.persistence import create_pool, register_workflow_definition
 from engine.persistence.migrations import migrate
 from engine.runtime.serialization import JSONValue
@@ -31,7 +31,16 @@ async def test_api_controls_and_inspects_workflow() -> None:
     await migrate(DATABASE_URL)
     pool = await create_pool(DATABASE_URL)
     await register_workflow_definition(pool, api_workflow)
-    app = create_app(pool)
+    admin_token = "integration-admin-token-value"
+    viewer_token = "integration-viewer-token-value"
+    auth = AuthConfig(
+        keys=(
+            APIKey.from_token("api-admin", "admin", admin_token),
+            APIKey.from_token("api-viewer", "viewer", viewer_token),
+        ),
+        max_request_bytes=1024,
+    )
+    app = create_app(pool, auth=auth)
     transport = ASGITransport(app=app)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -54,6 +63,28 @@ async def test_api_controls_and_inspects_workflow() -> None:
             stylesheet = await client.get("/static/styles.css")
             assert stylesheet.status_code == 200
             assert stylesheet.headers["content-type"].startswith("text/css")
+
+            unauthenticated = await client.get("/api/stats")
+            assert unauthenticated.status_code == 401
+            assert unauthenticated.headers["www-authenticate"] == "Bearer"
+            viewer_session = await client.get(
+                "/api/session", headers={"Authorization": f"Bearer {viewer_token}"}
+            )
+            assert viewer_session.json() == {"key_id": "api-viewer", "role": "viewer"}
+            viewer_write = await client.post(
+                "/api/workflows",
+                headers={"Authorization": f"Bearer {viewer_token}"},
+                json={"workflow_type": api_workflow.name, "definition_version": 1},
+            )
+            assert viewer_write.status_code == 403
+            too_large = await client.post(
+                "/api/workflows",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                content=b"x" * 1025,
+            )
+            assert too_large.status_code == 413
+
+            client.headers["Authorization"] = f"Bearer {admin_token}"
 
             stats = await client.get("/api/stats")
             assert set(stats.json()) == {
@@ -130,5 +161,19 @@ async def test_api_controls_and_inspects_workflow() -> None:
                 json={"workflow_type": "missing", "definition_version": 1},
             )
             assert missing_definition.status_code == 409
+
+            audit = await client.get("/api/audit")
+            actions = [record["action"] for record in audit.json()]
+            assert actions == [
+                "workflow.cancel",
+                "workflow.cancel",
+                "workflow.start",
+                "workflow.terminate",
+                "workflow.signal",
+                "workflow.signal",
+                "workflow.start",
+            ]
+            assert all(record["actor_key_id"] == "api-admin" for record in audit.json())
+            assert all(record["request_id"] for record in audit.json())
     finally:
         await pool.close()

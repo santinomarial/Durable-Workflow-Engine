@@ -24,6 +24,10 @@
       </a>
 
       <div class="topbar-actions">
+        <button id="session-button" class="session-button" type="button" aria-label="Sign in to workflow operations">
+          <span id="session-avatar" class="session-avatar" aria-hidden="true">?</span>
+          <span id="session-label">Sign in</span>
+        </button>
         <div id="health-pill" class="health-pill is-pending" role="status" aria-live="polite">
           <span class="health-dot" aria-hidden="true"></span>
           <span id="health-label">Checking engine</span>
@@ -278,6 +282,29 @@
         <div class="dialog-footer">
           <button class="button button-secondary" type="button" data-close-dialog="start-dialog">Cancel</button>
           <button id="start-submit" class="button button-primary" type="submit">Start workflow</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="auth-dialog" class="dialog dialog-compact">
+      <form id="auth-form" novalidate>
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Protected control plane</p>
+            <h2>Sign in to Durable</h2>
+            <p>Use a provisioned API token. The token stays in this browser tab and is never written to durable history.</p>
+          </div>
+          <button class="dialog-close icon-button" type="button" data-close-dialog="auth-dialog" aria-label="Close">×</button>
+        </div>
+        <label class="field">
+          <span>API token</span>
+          <input id="auth-token" type="password" required autocomplete="current-password" placeholder="Paste bearer token">
+          <small>Viewer, operator, and administrator roles are enforced by the API.</small>
+        </label>
+        <p id="auth-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-footer">
+          <button id="sign-out" class="button button-secondary" type="button" hidden>Sign out</button>
+          <button id="auth-submit" class="button button-primary" type="submit">Sign in</button>
         </div>
       </form>
     </dialog>

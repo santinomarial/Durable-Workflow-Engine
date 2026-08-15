@@ -22,6 +22,8 @@ const state = {
   networkRequests: 0,
   initialized: false,
   confirmAction: null,
+  authToken: null,
+  principal: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -60,6 +62,7 @@ async function api(path, options = {}) {
   const { quiet = false, ...fetchOptions } = options;
   const headers = new Headers(fetchOptions.headers || {});
   headers.set("Accept", "application/json");
+  if (state.authToken) headers.set("Authorization", `Bearer ${state.authToken}`);
   if (fetchOptions.body !== undefined) headers.set("Content-Type", "application/json");
   beginNetwork(quiet);
   try {
@@ -93,6 +96,22 @@ function safeStorageGet(key) {
 
 function safeStorageSet(key, value) {
   try { localStorage.setItem(key, value); } catch { /* Preferences are optional. */ }
+}
+
+function safeSessionGet(key) {
+  try { return sessionStorage.getItem(key); } catch { return null; }
+}
+
+function safeSessionSet(key, value) {
+  try {
+    if (value === null) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, value);
+  } catch { /* Session persistence is optional. */ }
+}
+
+function roleAtLeast(minimum) {
+  const levels = { viewer: 10, operator: 20, admin: 30 };
+  return Boolean(state.principal && levels[state.principal.role] >= levels[minimum]);
 }
 
 function formatDate(value, withSeconds = false) {
@@ -561,10 +580,10 @@ function renderDetail(execution, history) {
   $("history-count").textContent = history.length.toLocaleString();
 
   const terminal = TERMINAL_STATUSES.has(execution.status);
-  $("open-signal").disabled = terminal;
-  $("request-cancel").disabled = terminal || Boolean(execution.cancellation_requested_at);
+  $("open-signal").disabled = terminal || !roleAtLeast("operator");
+  $("request-cancel").disabled = terminal || Boolean(execution.cancellation_requested_at) || !roleAtLeast("operator");
   $("request-cancel").textContent = execution.cancellation_requested_at ? "Cancellation requested" : "Request cancellation";
-  $("request-terminate").disabled = terminal;
+  $("request-terminate").disabled = terminal || !roleAtLeast("admin");
 
   renderMetadata(execution);
   renderOperationalState(execution, history);
@@ -649,6 +668,10 @@ async function loadDashboard(options = {}) {
     $("last-updated").textContent = `Updated ${new Intl.DateTimeFormat(undefined, { timeStyle: "medium" }).format(new Date())}`;
     if (state.selected && refreshDetail) await selectExecution(state.selected, { updateLocation: false, quiet });
   } catch (error) {
+    if (error.status === 401) {
+      requireAuthentication("Your session is missing or no longer valid.");
+      return;
+    }
     if (!state.initialized) showListState("Could not load workflows", error.message, true);
     if (!quiet) toast("Refresh failed", error.message, "error");
   } finally {
@@ -660,7 +683,7 @@ async function loadDashboard(options = {}) {
 function schedulePolling() {
   if (state.refreshTimer) window.clearTimeout(state.refreshTimer);
   state.refreshTimer = null;
-  if (!state.live) return;
+  if (!state.live || !state.principal) return;
   state.refreshTimer = window.setTimeout(async () => {
     if (!document.hidden) await loadDashboard({ quiet: true });
     schedulePolling();
@@ -732,6 +755,82 @@ function showDialog(id, focusId) {
 function closeDialog(id) {
   const dialog = $(id);
   if (dialog.open) dialog.close();
+}
+
+function renderSession() {
+  const signedIn = Boolean(state.principal);
+  $("session-label").textContent = signedIn ? `${state.principal.key_id} · ${state.principal.role}` : "Sign in";
+  $("session-avatar").textContent = signedIn ? state.principal.role.slice(0, 1) : "?";
+  $("session-button").setAttribute("aria-label", signedIn ? "Manage authenticated session" : "Sign in to workflow operations");
+  $("sign-out").hidden = !signedIn;
+  $("open-start").disabled = !roleAtLeast("operator");
+}
+
+function requireAuthentication(message = "Sign in to inspect and operate workflows.") {
+  state.authToken = null;
+  state.principal = null;
+  safeSessionSet("dwe-api-token", null);
+  renderSession();
+  schedulePolling();
+  $("auth-error").textContent = message;
+  $("auth-error").hidden = false;
+  showDialog("auth-dialog", "auth-token");
+}
+
+async function authenticateSession() {
+  state.principal = await api("/api/session");
+  renderSession();
+}
+
+async function signIn(event) {
+  event.preventDefault();
+  const token = $("auth-token").value.trim();
+  const errorNode = $("auth-error");
+  const button = $("auth-submit");
+  errorNode.hidden = true;
+  if (!token) {
+    errorNode.textContent = "API token is required.";
+    errorNode.hidden = false;
+    return;
+  }
+  state.authToken = token;
+  try {
+    setSubmitting(button, true, "Signing in…");
+    await authenticateSession();
+    safeSessionSet("dwe-api-token", token);
+    $("auth-token").value = "";
+    closeDialog("auth-dialog");
+    toast("Signed in", `${state.principal.key_id} has the ${state.principal.role} role.`);
+    await loadDashboard();
+    schedulePolling();
+  } catch (error) {
+    state.authToken = null;
+    state.principal = null;
+    safeSessionSet("dwe-api-token", null);
+    renderSession();
+    errorNode.textContent = error.status === 401 ? "That API token is not valid." : error.message;
+    errorNode.hidden = false;
+  } finally {
+    setSubmitting(button, false, "Sign in");
+  }
+}
+
+function signOut() {
+  state.authToken = null;
+  state.principal = null;
+  state.executions = [];
+  state.stats = null;
+  state.execution = null;
+  state.history = [];
+  state.selected = null;
+  safeSessionSet("dwe-api-token", null);
+  closeDialog("auth-dialog");
+  renderSession();
+  renderExecutionList();
+  $("detail").hidden = true;
+  $("detail-empty").hidden = false;
+  updateURL();
+  requireAuthentication("You have signed out of workflow operations.");
 }
 
 async function startWorkflow(event) {
@@ -884,6 +983,12 @@ function bindEvents() {
     toast(state.live ? "Live updates on" : "Live updates paused", state.live ? "The console refreshes every five seconds." : "Use Refresh to fetch new state.");
   });
   $("theme-toggle").addEventListener("click", () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
+  $("session-button").addEventListener("click", () => {
+    $("auth-error").hidden = true;
+    showDialog("auth-dialog", "auth-token");
+  });
+  $("auth-form").addEventListener("submit", signIn);
+  $("sign-out").addEventListener("click", signOut);
   $("open-start").addEventListener("click", () => {
     $("start-error").hidden = true;
     showDialog("start-dialog", "start-type");
@@ -974,10 +1079,22 @@ async function initialize() {
   const preferredTheme = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
   applyTheme(storedTheme === "light" || storedTheme === "dark" ? storedTheme : preferredTheme);
   state.live = safeStorageGet("dwe-live") !== "false";
+  state.authToken = safeSessionGet("dwe-api-token");
   $("live-toggle").checked = state.live;
   bindEvents();
+  renderSession();
   setActiveTab(state.activeTab, false);
-  await loadDashboard();
+  await loadHealth();
+  if (state.authToken) {
+    try {
+      await authenticateSession();
+      await loadDashboard();
+    } catch (error) {
+      requireAuthentication(error.status === 401 ? "Your saved session is no longer valid." : error.message);
+    }
+  } else {
+    requireAuthentication();
+  }
   schedulePolling();
 }
 

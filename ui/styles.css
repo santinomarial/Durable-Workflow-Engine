@@ -169,6 +169,23 @@ button, select { touch-action: manipulation; }
 
 .topbar-actions { display: flex; align-items: center; gap: 10px; }
 
+.session-button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px 4px 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 680;
+  cursor: pointer;
+}
+.session-button:hover { border-color: var(--accent); background: var(--surface-hover); }
+.session-avatar { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 9px; font-weight: 850; text-transform: uppercase; }
+
 .health-pill {
   display: inline-flex;
   min-height: 34px;
@@ -490,7 +507,8 @@ kbd { display: inline-grid; min-width: 21px; min-height: 20px; margin: 0 2px; pl
 
 @media (max-width: 560px) {
   .topbar { padding: 12px 15px; }
-  .brand small, .health-pill, #theme-toggle { display: none; }
+  .brand small, .health-pill, #theme-toggle, #session-label { display: none; }
+  .session-button { padding-right: 5px; }
   .topbar-actions { width: auto; margin-left: auto; }
   .button { min-height: 42px; }
   #open-start { font-size: 12px; }

@@ -45,6 +45,7 @@ Docker Compose.
 uv sync --python 3.12 --all-groups
 docker compose up -d postgres
 export DATABASE_URL=postgresql://durable:durable@localhost:5432/durable
+export DWE_AUTH_MODE=disabled  # isolated local development only
 ```
 
 Run all three worker roles. The worker applies migrations and registers the
@@ -60,6 +61,7 @@ In a second terminal, start the API and embedded observability UI:
 
 ```shell
 export DATABASE_URL=postgresql://durable:durable@localhost:5432/durable
+export DWE_AUTH_MODE=disabled  # isolated local development only
 uv run uvicorn engine.api.app:app --reload
 ```
 
@@ -82,6 +84,9 @@ wait, and recorded deterministic values. Its source is
 The UI provides status filtering, an execution summary, chronological history,
 activity attempts and retry timing, a command/entity graph, signal and
 cancellation controls, and termination. OpenAPI documentation is at `/docs`.
+Production authentication is fail closed and uses hashed bearer-key
+configuration with viewer, operator, and administrator roles. See the
+[security guide](docs/security.md) before exposing the control plane.
 
 ## Replay model
 
@@ -234,8 +239,9 @@ uv run pytest
   archival are not implemented.
 - PostgreSQL is a single coordination boundary; there is no sharding,
   multi-region failover, or independent message broker.
-- The API/UI have no authentication, authorization, tenant isolation, TLS
-  termination, rate limiting, or production deployment configuration.
+- The API/UI provide hashed bearer-key authentication, role authorization,
+  request limits, and immutable mutation audits, but not tenant isolation. TLS
+  termination and shared multi-replica rate limiting belong at the ingress.
 - Workflow sandboxing is documented but not enforced by bytecode or process
   isolation; authors must keep workflow code deterministic and put I/O in
   activities.
