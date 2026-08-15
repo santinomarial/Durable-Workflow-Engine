@@ -1,14 +1,20 @@
+import asyncio
+import json
 import os
-from datetime import timedelta
+import random
+import signal
+import sys
+from datetime import datetime, timedelta
+from uuid import UUID
 
 import pytest
 
 from engine.persistence import (
+    LeasedTask,
     StaleLeaseError,
     complete_activity,
     create_pool,
     get_execution,
-    lease_task,
     process_activity_timeout,
     record_idempotent_effect,
     register_workflow_definition,
@@ -35,6 +41,42 @@ pytestmark = [
 ]
 
 chaos_pool = None
+
+
+def _leased_task(payload: dict[str, object]) -> LeasedTask:
+    return LeasedTask(
+        id=UUID(str(payload["id"])),
+        workflow_id=UUID(str(payload["workflow_id"])),
+        task_type=str(payload["task_type"]),
+        queue_name=str(payload["queue_name"]),
+        entity_id=UUID(str(payload["entity_id"])) if payload["entity_id"] is not None else None,
+        command_id=int(str(payload["command_id"])) if payload["command_id"] is not None else None,
+        attempt=int(str(payload["attempt"])),
+        input=payload["input"],
+        lease_token=UUID(str(payload["lease_token"])),
+        leased_at=datetime.fromisoformat(str(payload["leased_at"])),
+        lease_expires_at=datetime.fromisoformat(str(payload["lease_expires_at"])),
+        start_to_close_deadline=datetime.fromisoformat(str(payload["start_to_close_deadline"]))
+        if payload["start_to_close_deadline"] is not None
+        else None,
+    )
+
+
+async def _sigkill_worker(mode: str, queue_name: str) -> LeasedTask:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "tests.chaos.kill_worker",
+        mode,
+        queue_name,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    assert process.returncode == -signal.SIGKILL, stderr.decode()
+    payload = json.loads(stdout)
+    assert isinstance(payload, dict)
+    return _leased_task(payload)
 
 
 @activity(name="chaos-effect")
@@ -93,6 +135,21 @@ async def test_failure_harness_preserves_history_and_deduplicates_effects() -> N
             )
             for index in range(WORKFLOW_COUNT)
         ]
+        schedule = random.Random(20260815)
+        killed_workflow_count = schedule.randint(2, 4)
+        killed_workflow_tasks = [
+            await _sigkill_worker("workflow", queue_name) for _ in range(killed_workflow_count)
+        ]
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """
+                update tasks set lease_expires_at = now() - interval '1 second'
+                where id = any($1::uuid[])
+                """,
+                [task.id for task in killed_workflow_tasks],
+            )
+        assert await run_maintenance(pool, queue_name=queue_name) >= killed_workflow_count
+
         for execution in executions:
             assert await send_signal(
                 pool,
@@ -109,17 +166,24 @@ async def test_failure_harness_preserves_history_and_deduplicates_effects() -> N
                 payload={"duplicate": True},
             )
 
-        for _ in range(WORKFLOW_COUNT):
+        for _ in range(WORKFLOW_COUNT * 4):
+            async with pool.acquire() as connection:
+                scheduled_effects = await connection.fetchval(
+                    """
+                    select count(*) from tasks
+                    where queue_name = $1 and task_type = 'activity'
+                    """,
+                    queue_name,
+                )
+            if scheduled_effects == WORKFLOW_COUNT:
+                break
             assert await run_workflow_task(pool, registry, queue_name=queue_name)
+        else:
+            pytest.fail("workflow workers did not schedule every chaos effect")
 
-        killed_attempts = []
-        for _ in range(WORKFLOW_COUNT):
-            task = await lease_task(pool, task_type="activity", queue_name=queue_name)
-            assert task is not None and isinstance(task.input, dict)
-            key = task.input["idempotency_key"]
-            assert isinstance(key, str)
-            await record_idempotent_effect(pool, idempotency_key=key, payload=task.input["input"])
-            killed_attempts.append(task)
+        killed_attempts = [
+            await _sigkill_worker("activity", queue_name) for _ in range(WORKFLOW_COUNT)
+        ]
 
         async with pool.acquire() as connection:
             await connection.execute(

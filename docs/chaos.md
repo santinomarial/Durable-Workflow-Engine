@@ -3,9 +3,11 @@
 The chaos profile targets correctness at explicit failure windows rather than
 claiming that failures simply did not crash the process.
 
-For each workflow it performs an idempotent external effect, abandons the
-activity before completion is committed, expires the lease while retaining the
-original task/token, and lets maintenance create a new attempt. It also sends
+A seeded random schedule launches disposable subprocess workers. Workflow
+workers receive `SIGKILL` after leasing but before replay, and for every workflow
+an activity worker commits an idempotent external effect and receives `SIGKILL`
+before completion is recorded. The harness then expires those leases while
+retaining the original tokens and lets maintenance recover them. It also sends
 duplicate signals while workers are offline, restarts the connection pool,
 executes parallel activities and a durable timer, and submits a completion from
 the stale worker.
