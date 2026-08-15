@@ -48,6 +48,7 @@ class WorkflowContext:
         self._workflow_id = workflow_id
         self._history = history
         self._next_command_id = 0
+        self._consumed_signal_seqs: set[int] = set()
 
     @property
     def next_command_id(self) -> int:
@@ -168,3 +169,15 @@ class WorkflowContext:
             raise _Blocked
         if terminal.event_type == "TimerCanceled":
             raise RuntimeError("timer was canceled")
+
+    async def wait_signal(self, name: str) -> JSONValue:
+        """Consume the earliest unconsumed matching signal from durable history."""
+        if not name:
+            raise ValueError("signal name cannot be empty")
+        for event in self._history.signals:
+            if event.seq in self._consumed_signal_seqs:
+                continue
+            if event.attributes.get("name") == name:
+                self._consumed_signal_seqs.add(event.seq)
+                return clone_json(event.attributes.get("payload"))
+        raise _Blocked

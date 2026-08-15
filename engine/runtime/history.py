@@ -35,6 +35,7 @@ class HistoryIndex:
         self.scheduled_entities: dict[UUID, HistoryEvent] = {}
         self.activity_terminal: dict[UUID, HistoryEvent] = {}
         self.timer_terminal: dict[UUID, HistoryEvent] = {}
+        self.signals: list[HistoryEvent] = []
         previous_seq = 0
         for event in events:
             if event.seq != previous_seq + 1:
@@ -86,6 +87,17 @@ class HistoryIndex:
                         f"timer {event.entity_id} has multiple terminal events"
                     )
                 self.timer_terminal[event.entity_id] = event
+            if event.event_type == "SignalReceived":
+                name = event.attributes.get("name")
+                if not isinstance(name, str) or not name:
+                    raise InvalidHistoryError(
+                        f"SignalReceived at sequence {event.seq} has no signal name"
+                    )
+                if event.external_id is None:
+                    raise InvalidHistoryError(
+                        f"SignalReceived at sequence {event.seq} has no external identity"
+                    )
+                self.signals.append(event)
 
     def first_unvisited_command(self, next_command_id: int) -> HistoryEvent | None:
         remaining = [

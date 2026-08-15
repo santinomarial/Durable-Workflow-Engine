@@ -9,6 +9,7 @@ from engine.persistence.leasing import (
     reclaim_expired_workflow_tasks,
     renew_lease,
 )
+from engine.persistence.signals import send_signal
 from engine.persistence.timeouts import process_activity_timeout
 from engine.persistence.timers import fire_due_timer
 from engine.persistence.transitions import (
@@ -40,5 +41,6 @@ __all__ = [
     "reclaim_expired_workflow_tasks",
     "register_workflow_definition",
     "renew_lease",
+    "send_signal",
     "start_workflow",
 ]

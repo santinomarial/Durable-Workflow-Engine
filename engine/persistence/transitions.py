@@ -152,13 +152,14 @@ async def start_workflow(
         await connection.execute(
             """
             insert into workflow_executions (
-              id, workflow_type, definition_version, input, next_seq
-            ) values ($1, $2, $3, $4::jsonb, 2)
+              id, workflow_type, definition_version, input, next_seq, queue_name
+            ) values ($1, $2, $3, $4::jsonb, 2, $5)
             """,
             execution_id,
             workflow_type,
             definition_version,
             encoded_input,
+            queue_name,
         )
         await connection.execute(
             """
@@ -431,6 +432,17 @@ async def commit_workflow_replay(
                 "completed" if completed else "failed",
                 canonical_json(payload),
                 next_seq + 1,
+            )
+            await connection.execute(
+                """
+                update tasks
+                set status = 'dead', completed_at = now()
+                where workflow_id = $1
+                  and id <> $2
+                  and status in ('pending', 'leased')
+                """,
+                task.workflow_id,
+                task.id,
             )
         elif replay.status is not ReplayStatus.BLOCKED:
             raise TransitionError(f"unsupported replay status: {replay.status}")

@@ -239,6 +239,47 @@ async def test_timer_replay_schedules_blocks_and_resolves() -> None:
     assert completed_replay.result == "awake"
 
 
+@workflow(version=1)
+async def two_signal_workflow(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    del value
+    first = await ctx.wait_signal("item")
+    second = await ctx.wait_signal("item")
+    return [first, second]
+
+
+async def test_signal_waits_consume_matching_events_once_in_history_order() -> None:
+    history = (
+        started(),
+        HistoryEvent(
+            2,
+            "SignalReceived",
+            {"name": "other", "payload": 0},
+            external_id="other-1",
+        ),
+        HistoryEvent(
+            3,
+            "SignalReceived",
+            {"name": "item", "payload": 1},
+            external_id="item-1",
+        ),
+        HistoryEvent(
+            4,
+            "SignalReceived",
+            {"name": "item", "payload": 2},
+            external_id="item-2",
+        ),
+    )
+    replay = await replay_workflow(
+        two_signal_workflow,
+        workflow_id=WORKFLOW_ID,
+        workflow_input=None,
+        history=history,
+    )
+
+    assert replay.status is ReplayStatus.COMPLETED
+    assert replay.result == [1, 2]
+
+
 async def test_replay_rejects_unvisited_historical_command() -> None:
     first = await replay_workflow(
         sequential_workflow,
