@@ -368,6 +368,32 @@ async def test_signal_waits_consume_matching_events_once_in_history_order() -> N
     assert replay.result == [1, 2]
 
 
+@workflow(version=1, name="cancellation-aware")
+async def cancellation_aware(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    if ctx.cancellation_requested:
+        return "cancelled"
+    return value
+
+
+async def test_workflow_context_exposes_recorded_cancellation() -> None:
+    replay = await replay_workflow(
+        cancellation_aware,
+        workflow_id=WORKFLOW_ID,
+        workflow_input="running",
+        history=(
+            started(),
+            HistoryEvent(
+                2,
+                "WorkflowCancellationRequested",
+                {"reason": "operator request"},
+            ),
+        ),
+    )
+
+    assert replay.status is ReplayStatus.COMPLETED
+    assert replay.result == "cancelled"
+
+
 @workflow(version=1)
 async def gather_workflow(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
     del value

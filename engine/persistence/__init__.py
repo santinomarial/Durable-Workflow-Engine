@@ -29,11 +29,14 @@ from engine.persistence.transitions import (
     fail_activity,
     load_workflow_replay_state,
     register_workflow_definition,
+    request_workflow_cancellation,
     start_workflow,
     terminate_workflow,
 )
+from engine.sdk.activity_context import ActivityCancellationRequested
 
 __all__ = [
+    "ActivityCancellationRequested",
     "ExecutionSummary",
     "HistoryRecord",
     "LeasedTask",
@@ -58,6 +61,7 @@ __all__ = [
     "register_workflow_definition",
     "release_workflow_task",
     "renew_lease",
+    "request_workflow_cancellation",
     "send_signal",
     "start_workflow",
     "terminate_workflow",

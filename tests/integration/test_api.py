@@ -80,6 +80,28 @@ async def test_api_controls_and_inspects_workflow() -> None:
                 "WorkflowExecutionTerminated",
             ]
 
+            cancel_started = await client.post(
+                "/api/workflows",
+                json={
+                    "workflow_type": api_workflow.name,
+                    "definition_version": 1,
+                    "queue_name": "api-cancel-queue",
+                },
+            )
+            cancel_id = cancel_started.json()["workflow_id"]
+            cancellation = await client.post(
+                f"/api/workflows/{cancel_id}/cancel",
+                json={"reason": "API cancellation test"},
+            )
+            duplicate_cancellation = await client.post(
+                f"/api/workflows/{cancel_id}/cancel",
+                json={"reason": "duplicate"},
+            )
+            assert cancellation.json() == {"accepted": True}
+            assert duplicate_cancellation.json() == {"accepted": False}
+            cancelled_detail = await client.get(f"/api/workflows/{cancel_id}")
+            assert cancelled_detail.json()["cancellation_reason"] == "API cancellation test"
+
             missing_definition = await client.post(
                 "/api/workflows",
                 json={"workflow_type": "missing", "definition_version": 1},

@@ -84,6 +84,11 @@ class WorkflowContext:
     def next_command_id(self) -> int:
         return self._next_command_id
 
+    @property
+    def cancellation_requested(self) -> bool:
+        """Whether a durable cancellation request is present in workflow history."""
+        return self._history.cancellation_requested is not None
+
     def activity(
         self,
         definition: ActivityDefinition,

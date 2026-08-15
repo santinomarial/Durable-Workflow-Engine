@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import inspect
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from engine.persistence import Pool, complete_activity, fail_activity, lease_task
+from engine.persistence import (
+    ActivityCancellationRequested,
+    Pool,
+    complete_activity,
+    fail_activity,
+    heartbeat_activity,
+    lease_task,
+)
 from engine.runtime import DefinitionRegistry
 from engine.runtime.serialization import JSONValue
 from engine.sdk.activity_context import (
@@ -46,11 +53,22 @@ async def run_activity_task(
         raise TypeError("activity task has no idempotency key")
 
     definition = registry.activity(activity_type)
+
+    async def heartbeat(details: JSONValue, duration: timedelta) -> datetime:
+        return await heartbeat_activity(
+            pool,
+            task_id=task.id,
+            lease_token=task.lease_token,
+            details=details,
+            lease_duration=duration,
+        )
+
     context_token = set_activity_context(
         ActivityExecutionContext(
             idempotency_key=idempotency_key,
             task_id=task.id,
             attempt=task.attempt,
+            _heartbeat=heartbeat,
         )
     )
     failure: JSONValue = None
@@ -62,6 +80,8 @@ async def run_activity_task(
                 result = await activity_result
             else:
                 result = activity_result
+        except ActivityCancellationRequested:
+            raise
         except Exception as error:
             failure = {"type": type(error).__name__, "message": str(error)}
     finally:

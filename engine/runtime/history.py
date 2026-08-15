@@ -36,6 +36,7 @@ class HistoryIndex:
         self.activity_terminal: dict[UUID, HistoryEvent] = {}
         self.timer_terminal: dict[UUID, HistoryEvent] = {}
         self.signals: list[HistoryEvent] = []
+        self.cancellation_requested: HistoryEvent | None = None
         previous_seq = 0
         for event in events:
             if event.seq != previous_seq + 1:
@@ -103,6 +104,10 @@ class HistoryIndex:
                         f"SignalReceived at sequence {event.seq} has no external identity"
                     )
                 self.signals.append(event)
+            if event.event_type == "WorkflowCancellationRequested":
+                if self.cancellation_requested is not None:
+                    raise InvalidHistoryError("workflow cancellation was requested more than once")
+                self.cancellation_requested = event
 
     def first_unvisited_command(self, next_command_id: int) -> HistoryEvent | None:
         remaining = [

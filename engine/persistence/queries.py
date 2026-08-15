@@ -25,6 +25,8 @@ class ExecutionSummary:
     next_seq: int
     created_at: datetime
     closed_at: datetime | None
+    cancellation_requested_at: datetime | None
+    cancellation_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +59,8 @@ def _execution(row: dict[str, object]) -> ExecutionSummary:
         next_seq=cast(int, row["next_seq"]),
         created_at=cast(datetime, row["created_at"]),
         closed_at=cast(datetime | None, row["closed_at"]),
+        cancellation_requested_at=cast(datetime | None, row["cancellation_requested_at"]),
+        cancellation_reason=cast(str | None, row["cancellation_reason"]),
     )
 
 

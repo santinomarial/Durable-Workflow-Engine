@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from engine.persistence.database import Connection, Pool
 from engine.runtime.serialization import JSONValue, canonical_json
+from engine.sdk.activity_context import ActivityCancellationRequested
 
 TASK_TYPES = frozenset({"workflow", "activity", "timer"})
 
@@ -76,7 +77,28 @@ async def heartbeat_activity(
     if lease_duration.total_seconds() <= 0:
         raise ValueError("lease_duration must be positive")
     encoded_details = canonical_json(details)
-    async with pool.acquire() as connection:
+    async with pool.acquire() as connection, connection.transaction():
+        current = await connection.fetchrow(
+            """
+            select e.cancellation_requested_at, e.cancellation_reason
+            from tasks t
+            join workflow_executions e on e.id = t.workflow_id
+            where t.id = $1
+              and t.task_type = 'activity'
+              and t.status = 'leased'
+              and t.lease_token = $2
+              and t.lease_expires_at > now()
+            for update of t
+            """,
+            task_id,
+            lease_token,
+        )
+        if current is None:
+            raise StaleLeaseError(f"activity task {task_id} does not hold a live lease")
+        if current["cancellation_requested_at"] is not None:
+            raise ActivityCancellationRequested(
+                task_id, cast(str | None, current["cancellation_reason"])
+            )
         expires_at = await connection.fetchval(
             """
             update tasks
@@ -96,7 +118,7 @@ async def heartbeat_activity(
             lease_duration,
         )
     if expires_at is None:
-        raise StaleLeaseError(f"activity task {task_id} does not hold a live lease")
+        raise StaleLeaseError(f"activity task {task_id} lost its lease during heartbeat")
     return cast(datetime, expires_at)
 
 
@@ -194,6 +216,7 @@ async def _lease_candidate(
           and t.queue_name = $2
           and t.visible_at <= now()
           and e.status = 'running'
+          and (t.task_type <> 'activity' or e.cancellation_requested_at is null)
         order by t.visible_at, t.created_at, t.id
         for update of t skip locked
         limit 1

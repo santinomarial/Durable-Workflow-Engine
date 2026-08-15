@@ -55,5 +55,11 @@ $("terminate").onclick = async () => {
   await selectExecution(state.selected); await loadExecutions();
 };
 
+$("cancel").onclick = async () => {
+  if (!state.selected) return;
+  await api(`/api/workflows/${state.selected}/cancel`, { method: "POST", body: JSON.stringify({ reason: "operator request" }) });
+  await selectExecution(state.selected); await loadExecutions();
+};
+
 api("/api/health").then(() => { $("health").textContent = "PostgreSQL connected"; $("health-dot").style.background = "#4ee09a"; }).catch(error => { $("health").textContent = error.message; $("health-dot").style.background = "#ff6b6b"; });
 loadExecutions();

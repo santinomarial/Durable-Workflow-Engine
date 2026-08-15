@@ -22,6 +22,7 @@ from engine.persistence import (
     get_execution,
     get_history,
     list_executions,
+    request_workflow_cancellation,
     send_signal,
     start_workflow,
     terminate_workflow,
@@ -48,6 +49,10 @@ class SignalRequest(BaseModel):
 
 
 class TerminateRequest(BaseModel):
+    reason: str | None = None
+
+
+class CancelRequest(BaseModel):
     reason: str | None = None
 
 
@@ -152,6 +157,16 @@ def create_app(pool: Pool | None = None) -> FastAPI:
     ) -> dict[str, bool]:
         try:
             accepted = await terminate_workflow(
+                _pool(request), workflow_id=workflow_id, reason=body.reason
+            )
+        except TransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"accepted": accepted}
+
+    @application.post("/api/workflows/{workflow_id}/cancel")
+    async def cancel(workflow_id: UUID, body: CancelRequest, request: Request) -> dict[str, bool]:
+        try:
+            accepted = await request_workflow_cancellation(
                 _pool(request), workflow_id=workflow_id, reason=body.reason
             )
         except TransitionError as error:

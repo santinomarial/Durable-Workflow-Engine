@@ -233,6 +233,68 @@ async def terminate_workflow(
     return True
 
 
+async def request_workflow_cancellation(
+    pool: Pool,
+    *,
+    workflow_id: UUID,
+    reason: str | None = None,
+) -> bool:
+    """Record one cooperative cancellation request and wake workflow replay."""
+    async with pool.acquire() as connection, connection.transaction():
+        execution = await connection.fetchrow(
+            """
+            select status, next_seq, queue_name, cancellation_requested_at
+            from workflow_executions where id = $1 for update
+            """,
+            workflow_id,
+        )
+        if execution is None:
+            raise TransitionError(f"workflow {workflow_id} does not exist")
+        if execution["status"] != "running":
+            raise TerminalWorkflowError(f"workflow {workflow_id} is {execution['status']}")
+        if execution["cancellation_requested_at"] is not None:
+            return False
+        next_seq = cast(int, execution["next_seq"])
+        await connection.execute(
+            """
+            insert into history_events (workflow_id, seq, event_type, attributes)
+            values ($1, $2, 'WorkflowCancellationRequested', $3::jsonb)
+            """,
+            workflow_id,
+            next_seq,
+            canonical_json({"reason": reason}),
+        )
+        await connection.execute(
+            """
+            update workflow_executions
+            set cancellation_requested_at = now(), cancellation_reason = $2, next_seq = $3
+            where id = $1
+            """,
+            workflow_id,
+            reason,
+            next_seq + 1,
+        )
+        await connection.execute(
+            """
+            update tasks set status = 'dead', completed_at = now()
+            where workflow_id = $1
+              and task_type in ('activity', 'timer')
+              and status = 'pending'
+            """,
+            workflow_id,
+        )
+        await connection.execute(
+            """
+            insert into tasks (id, workflow_id, task_type, queue_name)
+            values ($1, $2, 'workflow', $3)
+            """,
+            uuid4(),
+            workflow_id,
+            execution["queue_name"],
+        )
+    return True
+
+
 async def load_workflow_replay_state(pool: Pool, task: LeasedTask) -> WorkflowReplayState:
     """Load the pinned definition identity and ordered history for a leased task."""
     if task.task_type != "workflow":
@@ -452,7 +514,7 @@ async def commit_workflow_replay(
             raise StaleLeaseError(f"workflow task {task.id} does not hold the current lease")
         execution = await connection.fetchrow(
             """
-            select status, next_seq
+            select status, next_seq, cancellation_requested_at, cancellation_reason
             from workflow_executions
             where id = $1
             for update
@@ -465,7 +527,43 @@ async def commit_workflow_replay(
             raise TerminalWorkflowError(f"workflow {task.workflow_id} is {execution['status']}")
 
         next_seq = cast(int, execution["next_seq"])
-        if replay.status is ReplayStatus.COMMANDS:
+        cancellation_requested = execution["cancellation_requested_at"] is not None
+        if cancellation_requested and replay.status in (
+            ReplayStatus.COMMANDS,
+            ReplayStatus.BLOCKED,
+        ):
+            await connection.execute(
+                """
+                insert into history_events (workflow_id, seq, event_type, attributes)
+                values ($1, $2, 'WorkflowExecutionTerminated', $3::jsonb)
+                """,
+                task.workflow_id,
+                next_seq,
+                canonical_json(
+                    {
+                        "reason": cast(str | None, execution["cancellation_reason"]),
+                        "cause": "cancellation",
+                    }
+                ),
+            )
+            await connection.execute(
+                """
+                update workflow_executions
+                set status = 'terminated', next_seq = $2, closed_at = now()
+                where id = $1
+                """,
+                task.workflow_id,
+                next_seq + 1,
+            )
+            await connection.execute(
+                """
+                update tasks set status = 'dead', completed_at = now()
+                where workflow_id = $1 and id <> $2 and status in ('pending', 'leased')
+                """,
+                task.workflow_id,
+                task.id,
+            )
+        elif replay.status is ReplayStatus.COMMANDS:
             if not replay.commands:
                 raise TransitionError("commands replay result contains no commands")
             marker_recorded = False
