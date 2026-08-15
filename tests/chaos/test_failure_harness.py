@@ -135,6 +135,7 @@ async def test_failure_harness_preserves_history_and_deduplicates_effects() -> N
             )
             for index in range(WORKFLOW_COUNT)
         ]
+        workflow_ids = [execution.workflow_id for execution in executions]
         schedule = random.Random(20260815)
         killed_workflow_count = schedule.randint(2, 4)
         killed_workflow_tasks = [
@@ -206,7 +207,11 @@ async def test_failure_harness_preserves_history_and_deduplicates_effects() -> N
             running = 0
             async with pool.acquire() as connection:
                 running = await connection.fetchval(
-                    "select count(*) from workflow_executions where status = 'running'"
+                    """
+                    select count(*) from workflow_executions
+                    where id = any($1::uuid[]) and status = 'running'
+                    """,
+                    workflow_ids,
                 )
             if running == 0:
                 break
@@ -219,15 +224,28 @@ async def test_failure_harness_preserves_history_and_deduplicates_effects() -> N
             pytest.fail("chaos workflows did not converge")
 
         async with pool.acquire() as connection:
-            ledger_count = await connection.fetchval("select count(*) from effect_ledger")
+            ledger_count = await connection.fetchval(
+                """
+                select count(distinct ledger.idempotency_key)
+                from effect_ledger ledger
+                join history_events event
+                  on event.entity_id::text = ledger.idempotency_key
+                where event.workflow_id = any($1::uuid[])
+                  and event.event_type = 'ActivityScheduled'
+                """,
+                workflow_ids,
+            )
             malformed_histories = await connection.fetchval(
                 """
                 select count(*) from (
                   select workflow_id, count(*) as events, max(seq) as max_seq
-                  from history_events group by workflow_id
+                  from history_events
+                  where workflow_id = any($1::uuid[])
+                  group by workflow_id
                   having count(*) <> max(seq)
                 ) malformed
-                """
+                """,
+                workflow_ids,
             )
         assert ledger_count == WORKFLOW_COUNT
         assert malformed_histories == 0

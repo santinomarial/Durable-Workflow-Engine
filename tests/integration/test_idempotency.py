@@ -76,7 +76,17 @@ async def test_retried_activity_observes_one_cooperating_ledger_effect() -> None
         assert await run_workflow_task(pool, registry, queue_name="idempotency-queue")
 
         async with pool.acquire() as connection:
-            ledger = await connection.fetch("select idempotency_key, payload from effect_ledger")
+            ledger = await connection.fetch(
+                """
+                select ledger.idempotency_key, ledger.payload
+                from effect_ledger ledger
+                join history_events event
+                  on event.entity_id::text = ledger.idempotency_key
+                where event.workflow_id = $1
+                  and event.event_type = 'ActivityScheduled'
+                """,
+                started.workflow_id,
+            )
             result = await connection.fetchval(
                 "select result from workflow_executions where id = $1", started.workflow_id
             )
