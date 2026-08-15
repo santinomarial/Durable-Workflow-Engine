@@ -48,7 +48,7 @@ async def test_api_controls_and_inspects_workflow() -> None:
             health = await client.get("/api/health")
             assert health.json()["status"] == "ready"
             assert health.json()["database"] == "ok"
-            assert health.json()["schema_version"] == "0010"
+            assert health.json()["schema_version"] == "0011"
             assert health.headers["cache-control"] == "no-store"
             assert health.headers["x-content-type-options"] == "nosniff"
             assert health.headers["x-frame-options"] == "DENY"
@@ -143,6 +143,24 @@ async def test_api_controls_and_inspects_workflow() -> None:
                 "priority": 10,
                 "team": "fulfillment",
             }
+            paused = await client.post(
+                f"/api/workflows/{workflow_id}/pause", json={"reason": "investigating"}
+            )
+            duplicate_pause = await client.post(
+                f"/api/workflows/{workflow_id}/pause", json={"reason": "duplicate"}
+            )
+            assert paused.json() == {"accepted": True}
+            assert duplicate_pause.json() == {"accepted": False}
+            paused_detail = await client.get(f"/api/workflows/{workflow_id}")
+            assert paused_detail.json()["pause_reason"] == "investigating"
+            resumed = await client.post(
+                f"/api/workflows/{workflow_id}/resume", json={"reason": "fixed"}
+            )
+            duplicate_resume = await client.post(
+                f"/api/workflows/{workflow_id}/resume", json={"reason": "duplicate"}
+            )
+            assert resumed.json() == {"accepted": True}
+            assert duplicate_resume.json() == {"accepted": False}
 
             signal = await client.post(
                 f"/api/workflows/{workflow_id}/signals",
@@ -164,6 +182,8 @@ async def test_api_controls_and_inspects_workflow() -> None:
             assert history.json()["next_after_seq"] is None
             assert [event["event_type"] for event in history.json()["items"]] == [
                 "WorkflowExecutionStarted",
+                "WorkflowExecutionPaused",
+                "WorkflowExecutionResumed",
                 "SignalReceived",
                 "WorkflowExecutionTerminated",
             ]
@@ -180,7 +200,7 @@ async def test_api_controls_and_inspects_workflow() -> None:
             history_tail = await client.get(
                 f"/api/workflows/{workflow_id}/history-tail", params={"limit": 1}
             )
-            assert [item["seq"] for item in history_tail.json()] == [3]
+            assert [item["seq"] for item in history_tail.json()] == [5]
 
             cancel_started = await client.post(
                 "/api/workflows",
@@ -204,6 +224,14 @@ async def test_api_controls_and_inspects_workflow() -> None:
             cancelled_detail = await client.get(f"/api/workflows/{cancel_id}")
             assert cancelled_detail.json()["cancellation_reason"] == "API cancellation test"
 
+            dead_letter = await client.get("/api/dead-letter")
+            assert any(item["workflow_id"] == workflow_id for item in dead_letter.json())
+            retried = await client.post(f"/api/workflows/{workflow_id}/retry")
+            assert retried.status_code == 201
+            retry_id = retried.json()["workflow_id"]
+            retry_detail = await client.get(f"/api/workflows/{retry_id}")
+            assert retry_detail.json()["retry_of"] == workflow_id
+
             missing_definition = await client.post(
                 "/api/workflows",
                 json={"workflow_type": "missing", "definition_version": 1},
@@ -213,12 +241,17 @@ async def test_api_controls_and_inspects_workflow() -> None:
             audit = await client.get("/api/audit")
             actions = [record["action"] for record in audit.json()]
             assert actions == [
+                "workflow.retry",
                 "workflow.cancel",
                 "workflow.cancel",
                 "workflow.start",
                 "workflow.terminate",
                 "workflow.signal",
                 "workflow.signal",
+                "workflow.resume",
+                "workflow.resume",
+                "workflow.pause",
+                "workflow.pause",
                 "workflow.search-attributes.update",
                 "workflow.start",
             ]

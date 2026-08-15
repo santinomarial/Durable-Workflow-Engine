@@ -42,9 +42,13 @@ from engine.persistence import (
     get_history_tail,
     get_operational_gauges,
     list_api_audit,
+    list_dead_tasks,
     list_executions,
     list_worker_heartbeats,
+    pause_workflow,
     request_workflow_cancellation,
+    resume_workflow,
+    retry_workflow,
     send_signal,
     start_workflow,
     terminate_workflow,
@@ -80,6 +84,10 @@ class TerminateRequest(BaseModel):
 
 
 class CancelRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class PauseRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=2000)
 
 
@@ -356,6 +364,16 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
             [asdict(record) for record in await list_api_audit(_pool(request), limit=limit)]
         )
 
+    @application.get("/api/dead-letter")
+    async def dead_letter_records(
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    ) -> Any:
+        require_role(request, "operator")
+        return jsonable_encoder(
+            [asdict(record) for record in await list_dead_tasks(_pool(request), limit=limit)]
+        )
+
     @application.post("/api/workflows", status_code=status.HTTP_201_CREATED)
     async def start(body: StartWorkflowRequest, request: Request) -> dict[str, Any]:
         principal = require_role(request, "operator")
@@ -459,6 +477,47 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
         except TransitionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return {"accepted": accepted}
+
+    @application.post("/api/workflows/{workflow_id}/pause")
+    async def pause(workflow_id: UUID, body: PauseRequest, request: Request) -> dict[str, bool]:
+        principal = require_role(request, "operator")
+        try:
+            accepted = await pause_workflow(
+                _pool(request),
+                workflow_id=workflow_id,
+                reason=body.reason,
+                audit=_audit(request, principal, "workflow.pause"),
+            )
+        except TransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"accepted": accepted}
+
+    @application.post("/api/workflows/{workflow_id}/resume")
+    async def resume(workflow_id: UUID, body: PauseRequest, request: Request) -> dict[str, bool]:
+        principal = require_role(request, "operator")
+        try:
+            accepted = await resume_workflow(
+                _pool(request),
+                workflow_id=workflow_id,
+                reason=body.reason,
+                audit=_audit(request, principal, "workflow.resume"),
+            )
+        except TransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"accepted": accepted}
+
+    @application.post("/api/workflows/{workflow_id}/retry", status_code=status.HTTP_201_CREATED)
+    async def retry(workflow_id: UUID, request: Request) -> Any:
+        principal = require_role(request, "admin")
+        try:
+            started = await retry_workflow(
+                _pool(request),
+                workflow_id=workflow_id,
+                audit=_audit(request, principal, "workflow.retry"),
+            )
+        except TransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return jsonable_encoder(asdict(started))
 
     @application.post("/api/workflows/{workflow_id}/cancel")
     async def cancel(workflow_id: UUID, body: CancelRequest, request: Request) -> dict[str, bool]:

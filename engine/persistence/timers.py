@@ -27,6 +27,7 @@ async def fire_due_timer(
               and t.status = 'pending'
               and t.visible_at <= coalesce($2::timestamptz, now())
               and e.status = 'running'
+              and e.paused_at is null
               and e.cancellation_requested_at is null
               and ($1::text is null or t.queue_name = $1)
             order by t.visible_at, t.id

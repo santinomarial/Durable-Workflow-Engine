@@ -26,6 +26,7 @@ const state = {
   confirmAction: null,
   authToken: null,
   principal: null,
+  deadLetters: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -287,7 +288,7 @@ function renderExecutionList() {
     }, [
       element("span", { className: "execution-item-header" }, [
         element("strong", { text: execution.workflow_type }),
-        statusBadge(execution.status),
+        statusBadge(execution.paused_at ? "paused" : execution.status),
       ]),
       element("code", { className: "execution-id", text: execution.id }),
       element("span", { className: "execution-meta" }, [
@@ -335,6 +336,9 @@ function deriveOperationalState(execution, history) {
   if (execution.status === "terminated") {
     const event = [...history].reverse().find((item) => item.event_type === "WorkflowExecutionTerminated");
     return { label: "Terminal state", title: "Workflow terminated", detail: event?.attributes?.reason || "Terminated by an operator." };
+  }
+  if (execution.paused_at) {
+    return { label: "Dispatch frozen", title: "Workflow paused", detail: execution.pause_reason || "Pending work and deadlines will resume on operator request." };
   }
   if (execution.cancellation_requested_at) {
     return { label: "Control request", title: "Cancellation requested", detail: execution.cancellation_reason || "Waiting for the workflow to observe cancellation." };
@@ -587,7 +591,7 @@ function renderDetail(execution, history) {
   $("workflow-type").textContent = execution.workflow_type;
   $("workflow-id").textContent = execution.id;
   $("workflow-version").textContent = `Version ${execution.definition_version}`;
-  $("workflow-status").replaceWith(statusBadge(execution.status));
+  $("workflow-status").replaceWith(statusBadge(execution.paused_at ? "paused" : execution.status));
   const badge = document.querySelector(".detail-title-row .status-badge");
   badge.id = "workflow-status";
   $("history-count").textContent = `${history.length.toLocaleString()}${state.historyTruncated ? "+" : ""}`;
@@ -598,6 +602,10 @@ function renderDetail(execution, history) {
   $("request-cancel").disabled = terminal || Boolean(execution.cancellation_requested_at) || !roleAtLeast("operator");
   $("request-cancel").textContent = execution.cancellation_requested_at ? "Cancellation requested" : "Request cancellation";
   $("request-terminate").disabled = terminal || !roleAtLeast("admin");
+  $("pause-resume").disabled = terminal || !roleAtLeast("operator");
+  $("pause-resume").textContent = execution.paused_at ? "Resume" : "Pause";
+  $("retry-workflow").hidden = !terminal;
+  $("retry-workflow").disabled = !terminal || !roleAtLeast("admin");
 
   renderMetadata(execution);
   renderOperationalState(execution, history);
@@ -800,6 +808,7 @@ function renderSession() {
   $("session-button").setAttribute("aria-label", signedIn ? "Manage authenticated session" : "Sign in to workflow operations");
   $("sign-out").hidden = !signedIn;
   $("open-start").disabled = !roleAtLeast("operator");
+  $("open-dead-letter").disabled = !roleAtLeast("operator");
 }
 
 function requireAuthentication(message = "Sign in to inspect and operate workflows.") {
@@ -962,18 +971,22 @@ async function sendSignal(event) {
 }
 
 function prepareConfirmation(action) {
-  if (!state.execution || TERMINAL_STATUSES.has(state.execution.status)) return;
+  if (!state.execution || (action !== "retry" && TERMINAL_STATUSES.has(state.execution.status))) return;
   state.confirmAction = action;
   const terminating = action === "terminate";
-  $("confirm-title").textContent = terminating ? "Terminate this workflow?" : "Request cancellation?";
-  $("confirm-description").textContent = terminating
-    ? "Termination is immediate and final. The execution cannot resume after this event is persisted."
-    : "The request is durable. The workflow will observe it during deterministic replay and may run cleanup logic.";
-  $("confirm-submit").textContent = terminating ? "Terminate workflow" : "Request cancellation";
+  const retrying = action === "retry";
+  $("confirm-title").textContent = retrying ? "Retry as a new execution?" : terminating ? "Terminate this workflow?" : "Request cancellation?";
+  $("confirm-description").textContent = retrying
+    ? "The original history remains immutable. A linked execution will start with the same input, version, queue, and search attributes."
+    : terminating
+      ? "Termination is immediate and final. The execution cannot resume after this event is persisted."
+      : "The request is durable. The workflow will observe it during deterministic replay and may run cleanup logic.";
+  $("confirm-submit").textContent = retrying ? "Retry as new" : terminating ? "Terminate workflow" : "Request cancellation";
   $("confirm-submit").className = terminating ? "button button-danger" : "button button-primary";
+  $("confirm-reason").closest("label").hidden = retrying;
   $("confirm-reason").value = "";
   $("confirm-error").hidden = true;
-  showDialog("confirm-dialog", "confirm-reason");
+  showDialog("confirm-dialog", retrying ? "confirm-submit" : "confirm-reason");
 }
 
 async function confirmControlAction(event) {
@@ -984,12 +997,22 @@ async function confirmControlAction(event) {
   const button = $("confirm-submit");
   errorNode.hidden = true;
   try {
-    setSubmitting(button, true, action === "terminate" ? "Terminating…" : "Requesting…");
+    setSubmitting(button, true, action === "retry" ? "Starting retry…" : action === "terminate" ? "Terminating…" : "Requesting…");
     const response = await api(`/api/workflows/${encodeURIComponent(state.selected)}/${action}`, {
       method: "POST",
-      body: JSON.stringify({ reason: $("confirm-reason").value.trim() || "operator request" }),
+      ...(action === "retry" ? {} : { body: JSON.stringify({ reason: $("confirm-reason").value.trim() || "operator request" }) }),
     });
     closeDialog("confirm-dialog");
+    if (action === "retry") {
+      state.selected = response.workflow_id;
+      state.statusFilter = "";
+      $("status-filter").value = "";
+      toast("Retry started", "A linked execution is now running with the original durable inputs.");
+      updateURL();
+      await loadDashboard({ refreshDetail: false });
+      await selectExecution(response.workflow_id, { updateLocation: false });
+      return;
+    }
     toast(
       action === "terminate" ? "Workflow terminated" : "Cancellation requested",
       response.accepted ? "The control event was persisted." : "This control event had already been recorded.",
@@ -1000,6 +1023,65 @@ async function confirmControlAction(event) {
     errorNode.hidden = false;
   } finally {
     setSubmitting(button, false, "Confirm");
+  }
+}
+
+async function togglePause() {
+  if (!state.selected || !state.execution) return;
+  const action = state.execution.paused_at ? "resume" : "pause";
+  const button = $("pause-resume");
+  try {
+    setSubmitting(button, true, action === "pause" ? "Pausing…" : "Resuming…");
+    const response = await api(`/api/workflows/${encodeURIComponent(state.selected)}/${action}`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "operator request" }),
+    });
+    const detail = action === "pause"
+      ? "New task dispatch and pending deadlines are frozen."
+      : "Task dispatch and pending deadlines are active.";
+    toast(action === "pause" ? "Workflow paused" : "Workflow resumed", response.accepted ? detail : `The workflow was already ${action === "pause" ? "paused" : "running"}.`);
+    await loadDashboard();
+  } catch (error) {
+    toast(`${humanize(action)} failed`, error.message, "error");
+  } finally {
+    setSubmitting(button, false, action === "pause" ? "Pause" : "Resume");
+  }
+}
+
+function renderDeadLetters() {
+  const rows = $("dead-letter-rows");
+  rows.replaceChildren(...state.deadLetters.map((task) => {
+    const open = element("button", { className: "button button-secondary", text: "Open", attrs: { type: "button" } });
+    open.addEventListener("click", async () => {
+      closeDialog("dead-letter-dialog");
+      state.selected = task.workflow_id;
+      updateURL();
+      await selectExecution(task.workflow_id, { updateLocation: false });
+    });
+    return element("tr", {}, [
+      element("td", {}, [
+        element("strong", { text: task.workflow_type }),
+        element("code", { text: shortId(task.workflow_id), attrs: { title: task.workflow_id } }),
+      ]),
+      element("td", { text: humanize(task.task_type) }),
+      element("td", { text: task.attempt }),
+      element("td", { text: task.queue_name }),
+      element("td", { text: conciseValue(task.outcome, 90) }),
+      element("td", {}, open),
+    ]);
+  }));
+  $("dead-letter-empty").hidden = state.deadLetters.length > 0;
+}
+
+async function loadDeadLetters() {
+  const errorNode = $("dead-letter-error");
+  errorNode.hidden = true;
+  try {
+    state.deadLetters = await api("/api/dead-letter?limit=250");
+    renderDeadLetters();
+  } catch (error) {
+    errorNode.textContent = error.message;
+    errorNode.hidden = false;
   }
 }
 
@@ -1072,6 +1154,13 @@ function bindEvents() {
     showDialog("attributes-dialog", "attributes-json");
   });
   $("attributes-form").addEventListener("submit", saveSearchAttributes);
+  $("pause-resume").addEventListener("click", togglePause);
+  $("retry-workflow").addEventListener("click", () => prepareConfirmation("retry"));
+  $("open-dead-letter").addEventListener("click", async () => {
+    showDialog("dead-letter-dialog", "refresh-dead-letter");
+    await loadDeadLetters();
+  });
+  $("refresh-dead-letter").addEventListener("click", loadDeadLetters);
   $("signal-form").addEventListener("submit", sendSignal);
   $("request-cancel").addEventListener("click", () => prepareConfirmation("cancel"));
   $("request-terminate").addEventListener("click", () => prepareConfirmation("terminate"));

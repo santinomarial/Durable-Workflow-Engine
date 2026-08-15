@@ -16,6 +16,7 @@ migration compatibility remain explicit release requirements.
 - Cursor-based history inspection, backup/restore tooling, and recovery guidance.
 - Dependency, static, CodeQL, secret, misconfiguration, and container scanning.
 - Indexed JSON search attributes with API filtering and operations-console editing.
+- Durable pause/resume, dead-letter inspection, and linked retry-as-new recovery.
 
 ## [0.1.0] - 2026-08-15
 

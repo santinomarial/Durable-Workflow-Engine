@@ -47,6 +47,7 @@ async def process_activity_timeout(
             join workflow_executions e on e.id = t.workflow_id
             where t.task_type = 'activity'
               and e.status = 'running'
+              and e.paused_at is null
               and ($1::text is null or t.queue_name = $1)
               and (
                 (t.status = 'pending' and t.schedule_to_start_deadline is not null

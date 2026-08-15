@@ -113,6 +113,7 @@ async def start_workflow(
     queue_name: str = "default",
     workflow_id: UUID | None = None,
     search_attributes: dict[str, JSONValue] | None = None,
+    retry_of: UUID | None = None,
     audit: AuditContext | None = None,
 ) -> StartedWorkflow:
     """Atomically create an execution, its first event, and its first task."""
@@ -165,8 +166,8 @@ async def start_workflow(
             """
             insert into workflow_executions (
               id, workflow_type, definition_version, input, next_seq, queue_name, created_at,
-              search_attributes
-            ) values ($1, $2, $3, $4::jsonb, 2, $5, $6, $7::jsonb)
+              search_attributes, retry_of
+            ) values ($1, $2, $3, $4::jsonb, 2, $5, $6, $7::jsonb, $8)
             """,
             execution_id,
             workflow_type,
@@ -175,6 +176,7 @@ async def start_workflow(
             queue_name,
             started_at,
             encoded_search_attributes,
+            retry_of,
         )
         await connection.execute(
             """
@@ -204,10 +206,173 @@ async def start_workflow(
                 "definition_version": definition_version,
                 "queue_name": queue_name,
                 "search_attributes": detached_search_attributes,
+                "retry_of": str(retry_of) if retry_of is not None else None,
             },
         )
 
     return StartedWorkflow(execution_id, workflow_type, definition_version)
+
+
+async def pause_workflow(
+    pool: Pool,
+    *,
+    workflow_id: UUID,
+    reason: str | None = None,
+    audit: AuditContext | None = None,
+) -> bool:
+    """Freeze new task dispatch and deadlines after any in-flight transition finishes."""
+    async with pool.acquire() as connection, connection.transaction():
+        execution = await connection.fetchrow(
+            "select status, next_seq, paused_at from workflow_executions where id = $1 for update",
+            workflow_id,
+        )
+        if execution is None:
+            raise TransitionError(f"workflow {workflow_id} does not exist")
+        if execution["status"] != "running":
+            raise TerminalWorkflowError(f"workflow {workflow_id} is {execution['status']}")
+        if execution["paused_at"] is not None:
+            await record_api_audit(
+                connection,
+                audit,
+                workflow_id=workflow_id,
+                accepted=False,
+                details={"reason": reason, "duplicate": True},
+            )
+            return False
+        next_seq = cast(int, execution["next_seq"])
+        await connection.execute(
+            """
+            insert into history_events (workflow_id, seq, event_type, attributes)
+            values ($1, $2, 'WorkflowExecutionPaused', $3::jsonb)
+            """,
+            workflow_id,
+            next_seq,
+            canonical_json({"reason": reason}),
+        )
+        await connection.execute(
+            """
+            update workflow_executions
+            set paused_at = now(), pause_reason = $2, next_seq = $3
+            where id = $1
+            """,
+            workflow_id,
+            reason,
+            next_seq + 1,
+        )
+        await record_api_audit(
+            connection,
+            audit,
+            workflow_id=workflow_id,
+            accepted=True,
+            details={"reason": reason},
+        )
+    return True
+
+
+async def resume_workflow(
+    pool: Pool,
+    *,
+    workflow_id: UUID,
+    reason: str | None = None,
+    audit: AuditContext | None = None,
+) -> bool:
+    """Resume dispatch and shift pending timers/deadlines by the paused duration."""
+    async with pool.acquire() as connection, connection.transaction():
+        execution = await connection.fetchrow(
+            "select status, next_seq, paused_at from workflow_executions where id = $1 for update",
+            workflow_id,
+        )
+        if execution is None:
+            raise TransitionError(f"workflow {workflow_id} does not exist")
+        if execution["status"] != "running":
+            raise TerminalWorkflowError(f"workflow {workflow_id} is {execution['status']}")
+        paused_at = cast(datetime | None, execution["paused_at"])
+        if paused_at is None:
+            await record_api_audit(
+                connection,
+                audit,
+                workflow_id=workflow_id,
+                accepted=False,
+                details={"reason": reason, "duplicate": True},
+            )
+            return False
+        next_seq = cast(int, execution["next_seq"])
+        await connection.execute(
+            """
+            update tasks
+            set visible_at = visible_at + (now() - $2::timestamptz),
+                schedule_to_start_deadline = case
+                  when schedule_to_start_deadline is null then null
+                  else schedule_to_start_deadline + (now() - $2::timestamptz)
+                end
+            where workflow_id = $1 and status = 'pending'
+            """,
+            workflow_id,
+            paused_at,
+        )
+        await connection.execute(
+            """
+            insert into history_events (workflow_id, seq, event_type, attributes)
+            values ($1, $2, 'WorkflowExecutionResumed', $3::jsonb)
+            """,
+            workflow_id,
+            next_seq,
+            canonical_json({"reason": reason, "paused_at": paused_at.isoformat()}),
+        )
+        await connection.execute(
+            """
+            update workflow_executions
+            set paused_at = null, pause_reason = null, next_seq = $2
+            where id = $1
+            """,
+            workflow_id,
+            next_seq + 1,
+        )
+        await record_api_audit(
+            connection,
+            audit,
+            workflow_id=workflow_id,
+            accepted=True,
+            details={"reason": reason},
+        )
+    return True
+
+
+async def retry_workflow(
+    pool: Pool,
+    *,
+    workflow_id: UUID,
+    audit: AuditContext | None = None,
+) -> StartedWorkflow:
+    """Start a new execution from a closed execution without mutating its history."""
+    async with pool.acquire() as connection:
+        original = await connection.fetchrow(
+            """
+            select workflow_type, definition_version, input, status, queue_name,
+                   search_attributes
+            from workflow_executions where id = $1
+            """,
+            workflow_id,
+        )
+    if original is None:
+        raise TransitionError(f"workflow {workflow_id} does not exist")
+    if original["status"] not in ("failed", "terminated"):
+        raise TransitionError("only failed or terminated workflows can be retried")
+    workflow_input = _decode_json(original["input"])
+    search_attributes = _decode_json(original["search_attributes"])
+    if not isinstance(search_attributes, dict):
+        raise TypeError("stored search attributes must be a JSON object")
+    retry_attributes = {**search_attributes, "dwe.retry_of": str(workflow_id)}
+    return await start_workflow(
+        pool,
+        workflow_type=cast(str, original["workflow_type"]),
+        definition_version=cast(int, original["definition_version"]),
+        workflow_input=workflow_input,
+        queue_name=cast(str, original["queue_name"]),
+        search_attributes=retry_attributes,
+        retry_of=workflow_id,
+        audit=audit,
+    )
 
 
 async def update_search_attributes(

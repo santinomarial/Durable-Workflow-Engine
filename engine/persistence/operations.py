@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from typing import cast
 from uuid import UUID
 
 from engine.persistence.database import Pool
+from engine.runtime.serialization import JSONValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +25,76 @@ class WorkerHeartbeat:
     last_seen_at: datetime
     stopped_at: datetime | None
     healthy: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DeadTask:
+    id: UUID
+    workflow_id: UUID
+    workflow_type: str
+    task_type: str
+    queue_name: str
+    entity_id: UUID | None
+    command_id: int | None
+    attempt: int
+    input: JSONValue
+    outcome: JSONValue
+    created_at: datetime
+    completed_at: datetime
+
+
+def _json(value: object) -> JSONValue:
+    if value is None:
+        return None
+    return cast(JSONValue, json.loads(cast(str, value)))
+
+
+async def list_dead_tasks(pool: Pool, *, limit: int = 100) -> tuple[DeadTask, ...]:
+    """Return bounded dead-letter inspection records with their terminal outcome."""
+    if limit < 1 or limit > 1000:
+        raise ValueError("limit must be between 1 and 1000")
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            select t.id, t.workflow_id, e.workflow_type, t.task_type, t.queue_name,
+                   t.entity_id, t.command_id, t.attempt, t.input, t.created_at,
+                   t.completed_at, outcome.attributes as outcome
+            from tasks t
+            join workflow_executions e on e.id = t.workflow_id
+            left join lateral (
+              select h.attributes
+              from history_events h
+              where h.workflow_id = t.workflow_id
+                and (t.entity_id is null or h.entity_id = t.entity_id)
+                and h.event_type in (
+                  'ActivityFailed', 'ActivityTimedOut', 'TimerCanceled',
+                  'WorkflowExecutionFailed', 'WorkflowExecutionTerminated'
+                )
+              order by h.seq desc limit 1
+            ) outcome on true
+            where t.status = 'dead'
+            order by t.completed_at desc, t.id
+            limit $1
+            """,
+            limit,
+        )
+    return tuple(
+        DeadTask(
+            id=cast(UUID, row["id"]),
+            workflow_id=cast(UUID, row["workflow_id"]),
+            workflow_type=cast(str, row["workflow_type"]),
+            task_type=str(row["task_type"]),
+            queue_name=cast(str, row["queue_name"]),
+            entity_id=cast(UUID | None, row["entity_id"]),
+            command_id=cast(int | None, row["command_id"]),
+            attempt=cast(int, row["attempt"]),
+            input=_json(row["input"]),
+            outcome=_json(row["outcome"]),
+            created_at=cast(datetime, row["created_at"]),
+            completed_at=cast(datetime, row["completed_at"]),
+        )
+        for row in rows
+    )
 
 
 async def heartbeat_worker(
@@ -102,6 +174,8 @@ async def get_operational_gauges(pool: Pool, *, stale_after_seconds: int = 30) -
               (select count(*) from tasks where status = 'dead') as tasks_dead,
               (select count(*) from workflow_executions
                 where status = 'running') as workflows_running,
+              (select count(*) from workflow_executions
+                where status = 'running' and paused_at is not null) as workflows_paused,
               (select count(*) from worker_heartbeats
                 where stopped_at is null
                   and last_seen_at > now() - $1 * interval '1 second') as workers_healthy
@@ -115,5 +189,6 @@ async def get_operational_gauges(pool: Pool, *, stale_after_seconds: int = 30) -
         "dwe_tasks_leased": float(cast(int, row["tasks_leased"])),
         "dwe_tasks_dead": float(cast(int, row["tasks_dead"])),
         "dwe_workflows_running": float(cast(int, row["workflows_running"])),
+        "dwe_workflows_paused": float(cast(int, row["workflows_paused"])),
         "dwe_workers_healthy": float(cast(int, row["workers_healthy"])),
     }

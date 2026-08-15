@@ -28,6 +28,9 @@ class ExecutionSummary:
     cancellation_requested_at: datetime | None
     cancellation_reason: str | None
     search_attributes: dict[str, JSONValue]
+    paused_at: datetime | None
+    pause_reason: str | None
+    retry_of: UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +81,9 @@ def _execution(row: dict[str, object]) -> ExecutionSummary:
         cancellation_requested_at=cast(datetime | None, row["cancellation_requested_at"]),
         cancellation_reason=cast(str | None, row["cancellation_reason"]),
         search_attributes=cast(dict[str, JSONValue], _json(row["search_attributes"])),
+        paused_at=cast(datetime | None, row["paused_at"]),
+        pause_reason=cast(str | None, row["pause_reason"]),
+        retry_of=cast(UUID | None, row["retry_of"]),
     )
 
 

@@ -216,6 +216,7 @@ async def _lease_candidate(
           and t.queue_name = $2
           and t.visible_at <= now()
           and e.status = 'running'
+          and e.paused_at is null
           and (t.task_type <> 'activity' or e.cancellation_requested_at is null)
         order by t.visible_at, t.created_at, t.id
         for update of t skip locked

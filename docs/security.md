@@ -40,8 +40,8 @@ TLS is still mandatory at the ingress because bearer tokens are credentials.
 | Role | Permissions |
 | --- | --- |
 | `viewer` | Inspect executions, history, and fleet statistics |
-| `operator` | Viewer permissions plus start, signal, and cancellation |
-| `admin` | Operator permissions plus termination and API audit access |
+| `operator` | Viewer permissions plus start, signal, cancellation, visibility editing, pause/resume, and dead-letter inspection |
+| `admin` | Operator permissions plus termination, retry-as-new, metrics, and API audit access |
 
 Every successful or duplicate control-plane mutation appends an immutable audit
 record in the same PostgreSQL transaction as the workflow transition. Audit

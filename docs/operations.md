@@ -33,7 +33,7 @@ The endpoint includes:
 
 - `dwe_http_requests_total` and `dwe_http_request_duration_seconds`;
 - `dwe_tasks_pending`, `dwe_tasks_leased`, and `dwe_tasks_dead`;
-- `dwe_workflows_running` and `dwe_workers_healthy`; and
+- `dwe_workflows_running`, `dwe_workflows_paused`, and `dwe_workers_healthy`; and
 - in worker processes, `dwe_worker_steps_total`,
   `dwe_worker_step_errors_total`, and `dwe_worker_step_duration_seconds`.
 
@@ -64,3 +64,19 @@ Set `DWE_LOG_FORMAT=text` only for local interactive use and set `LOG_LEVEL` to
 a standard Python level such as `INFO` or `WARNING`. Logs deliberately exclude
 authorization headers and workflow/signal payloads. Join an operator mutation
 to the immutable database audit by `request_id`.
+
+## Pause and recovery
+
+Pausing an execution prevents workers and maintenance pollers from acquiring
+new work for it. An activity or workflow transition already holding a valid
+lease may finish; token fencing and atomic transition rules still apply. On
+resume, pending timer visibility and activity schedule-to-start deadlines move
+forward by the paused duration, so an intentional pause does not manufacture
+timeouts.
+
+The recovery center lists dead tasks with their latest persisted outcome. A
+failed or terminated workflow can be retried as a new linked execution. Retry
+copies the immutable definition version, input, queue, and search attributes,
+adds `dwe.retry_of`, and never edits the original history. Operators should
+repair the underlying activity or configuration before retrying; external
+effects still require idempotency at their boundary.
