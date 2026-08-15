@@ -14,6 +14,8 @@ from fastapi import HTTPException, Request, status
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from engine.config import positive_int, secret_value
+
 Role = Literal["viewer", "operator", "admin"]
 ROLE_LEVEL: dict[Role, int] = {"viewer": 10, "operator": 20, "admin": 30}
 PUBLIC_PATHS = frozenset(
@@ -61,13 +63,13 @@ class AuthConfig:
         mode = os.environ.get("DWE_AUTH_MODE", "required").strip().lower()
         if mode not in {"required", "disabled"}:
             raise RuntimeError("DWE_AUTH_MODE must be 'required' or 'disabled'")
-        raw_keys = os.environ.get("DWE_API_KEYS", "").strip()
+        raw_keys = secret_value("DWE_API_KEYS") or ""
         keys = tuple(_parse_key(value) for value in raw_keys.split(",") if value.strip())
         config = cls(
             keys=keys,
             disabled=mode == "disabled",
-            requests_per_minute=_positive_env("DWE_RATE_LIMIT_PER_MINUTE", 300),
-            max_request_bytes=_positive_env("DWE_MAX_REQUEST_BYTES", 1_048_576),
+            requests_per_minute=positive_int("DWE_RATE_LIMIT_PER_MINUTE", 300),
+            max_request_bytes=positive_int("DWE_MAX_REQUEST_BYTES", 1_048_576),
         )
         return config
 
@@ -99,17 +101,6 @@ class AuthConfig:
             if hmac.compare_digest(digest, key.digest):
                 match = key
         return Principal(match.key_id, match.role) if match is not None else None
-
-
-def _positive_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, str(default))
-    try:
-        value = int(raw)
-    except ValueError as error:
-        raise RuntimeError(f"{name} must be an integer") from error
-    if value < 1:
-        raise RuntimeError(f"{name} must be positive")
-    return value
 
 
 def _parse_key(value: str) -> APIKey:

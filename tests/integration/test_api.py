@@ -138,11 +138,26 @@ async def test_api_controls_and_inspects_workflow() -> None:
             )
             assert terminated.json() == {"accepted": True}
             history = await client.get(f"/api/workflows/{workflow_id}/history")
-            assert [event["event_type"] for event in history.json()] == [
+            assert history.json()["next_after_seq"] is None
+            assert [event["event_type"] for event in history.json()["items"]] == [
                 "WorkflowExecutionStarted",
                 "SignalReceived",
                 "WorkflowExecutionTerminated",
             ]
+            first_history_page = await client.get(
+                f"/api/workflows/{workflow_id}/history", params={"limit": 1}
+            )
+            assert [item["seq"] for item in first_history_page.json()["items"]] == [1]
+            assert first_history_page.json()["next_after_seq"] == 1
+            second_history_page = await client.get(
+                f"/api/workflows/{workflow_id}/history",
+                params={"limit": 1, "after_seq": 1},
+            )
+            assert [item["seq"] for item in second_history_page.json()["items"]] == [2]
+            history_tail = await client.get(
+                f"/api/workflows/{workflow_id}/history-tail", params={"limit": 1}
+            )
+            assert [item["seq"] for item in history_tail.json()] == [3]
 
             cancel_started = await client.post(
                 "/api/workflows",

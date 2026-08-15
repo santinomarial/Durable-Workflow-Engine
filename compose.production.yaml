@@ -1,0 +1,100 @@
+x-engine-service: &engine-service
+  build:
+    context: .
+    target: runtime
+  image: durable-workflow-engine:${DWE_IMAGE_TAG:-local}
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  stop_grace_period: 45s
+  environment: &engine-environment
+    DATABASE_URL_FILE: /run/secrets/database_url
+    DWE_DB_POOL_MIN_SIZE: ${DWE_DB_POOL_MIN_SIZE:-2}
+    DWE_DB_POOL_MAX_SIZE: ${DWE_DB_POOL_MAX_SIZE:-10}
+    DWE_DB_COMMAND_TIMEOUT_SECONDS: ${DWE_DB_COMMAND_TIMEOUT_SECONDS:-30}
+    DWE_DB_STATEMENT_TIMEOUT_MS: ${DWE_DB_STATEMENT_TIMEOUT_MS:-30000}
+    DWE_LOG_FORMAT: json
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  secrets:
+    - database_url
+  networks:
+    - backend
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:17.6-alpine3.22
+    restart: unless-stopped
+    shm_size: 256mb
+    environment:
+      POSTGRES_DB: durable
+      POSTGRES_USER: durable
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U durable -d durable"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 60s
+
+  api:
+    <<: *engine-service
+    environment:
+      <<: *engine-environment
+      DWE_AUTH_MODE: required
+      DWE_API_KEYS_FILE: /run/secrets/api_keys
+      DWE_RATE_LIMIT_PER_MINUTE: ${DWE_RATE_LIMIT_PER_MINUTE:-300}
+      DWE_MAX_REQUEST_BYTES: ${DWE_MAX_REQUEST_BYTES:-1048576}
+    secrets:
+      - database_url
+      - api_keys
+    networks:
+      - backend
+      - ingress
+    ports:
+      - "${DWE_BIND_ADDRESS:-127.0.0.1}:${DWE_PORT:-8000}:8000"
+
+  worker:
+    <<: *engine-service
+    command:
+      - engine
+      - worker
+      - --definitions
+      - examples.order_workflow:registry
+      - --queue
+      - orders
+    healthcheck:
+      disable: true
+
+volumes:
+  postgres-data:
+
+networks:
+  backend:
+    internal: true
+  ingress:
+
+secrets:
+  postgres_password:
+    file: ${DWE_SECRETS_DIR:-./secrets}/postgres_password
+  database_url:
+    file: ${DWE_SECRETS_DIR:-./secrets}/database_url
+  api_keys:
+    file: ${DWE_SECRETS_DIR:-./secrets}/api_keys

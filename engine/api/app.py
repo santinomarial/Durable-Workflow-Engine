@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -30,14 +29,16 @@ from engine.api.security import (
     bearer_token,
     require_role,
 )
+from engine.config import DatabaseConfig, positive_float
 from engine.observability import METRICS, configure_logging
 from engine.persistence import (
     AuditContext,
     Pool,
-    create_pool,
+    create_configured_pool,
     get_execution,
     get_execution_stats,
-    get_history,
+    get_history_page,
+    get_history_tail,
     get_operational_gauges,
     list_api_audit,
     list_executions,
@@ -119,9 +120,7 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
     owned_pool: Pool | None = None
     auth_config = auth or AuthConfig.from_env()
     rate_limiter = FixedWindowRateLimiter(auth_config.requests_per_minute)
-    health_timeout = float(os.environ.get("DWE_HEALTH_TIMEOUT_SECONDS", "2"))
-    if health_timeout <= 0:
-        raise RuntimeError("DWE_HEALTH_TIMEOUT_SECONDS must be positive")
+    health_timeout = positive_float("DWE_HEALTH_TIMEOUT_SECONDS", 2)
     latest_migration = discover_migrations()[-1].version
 
     @asynccontextmanager
@@ -130,11 +129,9 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
         configure_logging()
         auth_config.validate()
         if pool is None:
-            database_url = os.environ.get("DATABASE_URL")
-            if not database_url:
-                raise RuntimeError("DATABASE_URL is required")
-            await migrate(database_url)
-            owned_pool = await create_pool(database_url)
+            database = DatabaseConfig.from_env(application_name="dwe-api")
+            await migrate(database.url)
+            owned_pool = await create_configured_pool(database)
             application.state.pool = owned_pool
         else:
             application.state.pool = pool
@@ -353,11 +350,33 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
         return jsonable_encoder(asdict(record))
 
     @application.get("/api/workflows/{workflow_id}/history")
-    async def history(workflow_id: UUID, request: Request) -> Any:
+    async def history(
+        workflow_id: UUID,
+        request: Request,
+        after_seq: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+    ) -> Any:
         require_role(request, "viewer")
         if await get_execution(_pool(request), workflow_id) is None:
             raise HTTPException(status_code=404, detail="workflow not found")
-        records = await get_history(_pool(request), workflow_id)
+        page = await get_history_page(_pool(request), workflow_id, after_seq=after_seq, limit=limit)
+        return jsonable_encoder(
+            {
+                "items": [asdict(record) for record in page.items],
+                "next_after_seq": page.next_after_seq,
+            }
+        )
+
+    @application.get("/api/workflows/{workflow_id}/history-tail")
+    async def history_tail(
+        workflow_id: UUID,
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+    ) -> Any:
+        require_role(request, "viewer")
+        if await get_execution(_pool(request), workflow_id) is None:
+            raise HTTPException(status_code=404, detail="workflow not found")
+        records = await get_history_tail(_pool(request), workflow_id, limit=limit)
         return jsonable_encoder([asdict(record) for record in records])
 
     @application.post("/api/workflows/{workflow_id}/signals")

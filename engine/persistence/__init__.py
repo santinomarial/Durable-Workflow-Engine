@@ -1,7 +1,7 @@
 """PostgreSQL persistence and atomic transitions."""
 
 from engine.persistence.audit import AuditContext, AuditRecord, list_api_audit
-from engine.persistence.database import Pool, create_pool
+from engine.persistence.database import Pool, create_configured_pool, create_pool
 from engine.persistence.effects import record_idempotent_effect
 from engine.persistence.leasing import (
     LeasedTask,
@@ -22,10 +22,13 @@ from engine.persistence.operations import (
 from engine.persistence.queries import (
     ExecutionStats,
     ExecutionSummary,
+    HistoryPage,
     HistoryRecord,
     get_execution,
     get_execution_stats,
     get_history,
+    get_history_page,
+    get_history_tail,
     list_executions,
 )
 from engine.persistence.signals import send_signal
@@ -51,6 +54,7 @@ __all__ = [
     "AuditRecord",
     "ExecutionStats",
     "ExecutionSummary",
+    "HistoryPage",
     "HistoryRecord",
     "LeasedTask",
     "Pool",
@@ -60,12 +64,15 @@ __all__ = [
     "WorkflowReplayState",
     "commit_workflow_replay",
     "complete_activity",
+    "create_configured_pool",
     "create_pool",
     "fail_activity",
     "fire_due_timer",
     "get_execution",
     "get_execution_stats",
     "get_history",
+    "get_history_page",
+    "get_history_tail",
     "get_operational_gauges",
     "heartbeat_activity",
     "heartbeat_worker",

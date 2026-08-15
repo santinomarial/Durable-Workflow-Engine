@@ -49,6 +49,12 @@ class HistoryRecord:
     created_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class HistoryPage:
+    items: tuple[HistoryRecord, ...]
+    next_after_seq: int | None
+
+
 def _json(value: object) -> JSONValue:
     if value is None:
         return None
@@ -149,4 +155,83 @@ async def get_history(pool: Pool, workflow_id: UUID) -> tuple[HistoryRecord, ...
             created_at=cast(datetime, row["created_at"]),
         )
         for row in rows
+    )
+
+
+async def get_history_page(
+    pool: Pool,
+    workflow_id: UUID,
+    *,
+    after_seq: int = 0,
+    limit: int = 500,
+) -> HistoryPage:
+    """Return a bounded forward page and an opaque monotonic continuation cursor."""
+    if after_seq < 0:
+        raise ValueError("after_seq cannot be negative")
+    if limit < 1 or limit > 1000:
+        raise ValueError("limit must be between 1 and 1000")
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            select seq, event_type, command_id, entity_id, external_id,
+                   attributes, created_at
+            from history_events
+            where workflow_id = $1 and seq > $2
+            order by seq limit $3
+            """,
+            workflow_id,
+            after_seq,
+            limit + 1,
+        )
+    has_more = len(rows) > limit
+    selected = rows[:limit]
+    items = tuple(
+        HistoryRecord(
+            seq=cast(int, row["seq"]),
+            event_type=cast(str, row["event_type"]),
+            command_id=cast(int | None, row["command_id"]),
+            entity_id=cast(UUID | None, row["entity_id"]),
+            external_id=cast(str | None, row["external_id"]),
+            attributes=_json(row["attributes"]),
+            created_at=cast(datetime, row["created_at"]),
+        )
+        for row in selected
+    )
+    return HistoryPage(
+        items=items,
+        next_after_seq=items[-1].seq if has_more and items else None,
+    )
+
+
+async def get_history_tail(
+    pool: Pool,
+    workflow_id: UUID,
+    *,
+    limit: int = 500,
+) -> tuple[HistoryRecord, ...]:
+    """Return the latest bounded history slice in chronological order."""
+    if limit < 1 or limit > 1000:
+        raise ValueError("limit must be between 1 and 1000")
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            select seq, event_type, command_id, entity_id, external_id,
+                   attributes, created_at
+            from history_events where workflow_id = $1
+            order by seq desc limit $2
+            """,
+            workflow_id,
+            limit,
+        )
+    return tuple(
+        HistoryRecord(
+            seq=cast(int, row["seq"]),
+            event_type=cast(str, row["event_type"]),
+            command_id=cast(int | None, row["command_id"]),
+            entity_id=cast(UUID | None, row["entity_id"]),
+            external_id=cast(str | None, row["external_id"]),
+            attributes=_json(row["attributes"]),
+            created_at=cast(datetime, row["created_at"]),
+        )
+        for row in reversed(rows)
     )

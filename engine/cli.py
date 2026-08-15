@@ -7,7 +7,6 @@ import asyncio
 import hashlib
 import importlib
 import json
-import os
 import secrets
 import signal
 from contextlib import suppress
@@ -15,8 +14,14 @@ from dataclasses import asdict
 from typing import cast
 from uuid import UUID
 
+from engine.config import DatabaseConfig, secret_value
 from engine.observability import configure_logging
-from engine.persistence import Pool, create_pool, register_workflow_definition, start_workflow
+from engine.persistence import (
+    Pool,
+    create_configured_pool,
+    register_workflow_definition,
+    start_workflow,
+)
 from engine.persistence.migrations import migrate
 from engine.runtime.definitions import DefinitionRegistry, WorkflowDefinition
 from engine.runtime.replay_check import replay_check
@@ -48,9 +53,14 @@ def _json_input(raw: str) -> JSONValue:
     return cast(JSONValue, json.loads(raw))
 
 
-async def _registered_pool(database_url: str) -> Pool:
+async def _configured_pool(database_url: str, application_name: str) -> Pool:
+    config = DatabaseConfig.from_env(url=database_url, application_name=application_name)
+    return await create_configured_pool(config)
+
+
+async def _registered_pool(database_url: str, application_name: str) -> Pool:
     await migrate(database_url)
-    return await create_pool(database_url)
+    return await _configured_pool(database_url, application_name)
 
 
 async def _run_replay_check(args: argparse.Namespace) -> int:
@@ -61,7 +71,7 @@ async def _run_replay_check(args: argparse.Namespace) -> int:
             f"loaded definition version {definition.version} does not match "
             f"--against-version {against_version}"
         )
-    pool = await create_pool(cast(str, args.database_url))
+    pool = await _configured_pool(cast(str, args.database_url), "dwe-replay-check")
     try:
         report = await replay_check(
             pool,
@@ -77,7 +87,7 @@ async def _run_replay_check(args: argparse.Namespace) -> int:
 async def _run_register(args: argparse.Namespace) -> int:
     database_url = cast(str, args.database_url)
     registry = _load_registry(cast(str, args.definitions))
-    pool = await _registered_pool(database_url)
+    pool = await _registered_pool(database_url, "dwe-register")
     try:
         for definition in registry.workflows:
             await register_workflow_definition(pool, definition)
@@ -98,7 +108,7 @@ async def _run_register(args: argparse.Namespace) -> int:
 
 
 async def _run_start(args: argparse.Namespace) -> int:
-    pool = await _registered_pool(cast(str, args.database_url))
+    pool = await _registered_pool(cast(str, args.database_url), "dwe-start")
     try:
         started = await start_workflow(
             pool,
@@ -116,7 +126,7 @@ async def _run_start(args: argparse.Namespace) -> int:
 async def _run_worker(args: argparse.Namespace) -> int:
     database_url = cast(str, args.database_url)
     registry = _load_registry(cast(str, args.definitions))
-    pool = await _registered_pool(database_url)
+    pool = await _registered_pool(database_url, "dwe-worker")
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
@@ -141,10 +151,11 @@ async def _run_worker(args: argparse.Namespace) -> int:
 
 
 def _database_argument(parser: argparse.ArgumentParser) -> None:
+    default_url = secret_value("DATABASE_URL")
     parser.add_argument(
         "--database-url",
-        default=os.environ.get("DATABASE_URL"),
-        required=os.environ.get("DATABASE_URL") is None,
+        default=default_url,
+        required=default_url is None,
     )
 
 

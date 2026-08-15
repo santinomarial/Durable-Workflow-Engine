@@ -11,6 +11,7 @@ const state = {
   selected: null,
   execution: null,
   history: [],
+  historyTruncated: false,
   statusFilter: "",
   search: "",
   eventFilter: "",
@@ -303,7 +304,7 @@ function renderMetadata(execution) {
     ["Created", formatDate(execution.created_at, true), execution.created_at],
     ["Closed", execution.closed_at ? formatDate(execution.closed_at, true) : "Still open", execution.closed_at],
     ["Task queue", execution.queue_name],
-    ["History size", `${state.history.length.toLocaleString()} events`],
+    ["History loaded", `${state.history.length.toLocaleString()}${state.historyTruncated ? "+" : ""} events`],
   ];
   $("metadata").replaceChildren(...items.map(([label, value, dateValue]) => {
     const dd = element("dd", { text: value, attrs: { title: value } });
@@ -468,7 +469,9 @@ function renderHistory() {
   });
   const list = $("history");
   list.replaceChildren();
-  $("history-results").textContent = `${events.length.toLocaleString()} of ${state.history.length.toLocaleString()} events`;
+  $("history-results").textContent = state.historyTruncated
+    ? `${events.length.toLocaleString()} matching loaded events · middle history omitted for safety`
+    : `${events.length.toLocaleString()} of ${state.history.length.toLocaleString()} events`;
   $("history-empty").hidden = events.length > 0;
 
   for (const event of events) {
@@ -549,7 +552,11 @@ function renderGraph(history) {
 }
 
 function rawSnapshot() {
-  return JSON.stringify({ execution: state.execution, history: state.history }, null, 2);
+  return JSON.stringify({
+    execution: state.execution,
+    history: state.history,
+    history_truncated: state.historyTruncated,
+  }, null, 2);
 }
 
 function setActiveTab(tab, updateLocation = true) {
@@ -577,7 +584,7 @@ function renderDetail(execution, history) {
   $("workflow-status").replaceWith(statusBadge(execution.status));
   const badge = document.querySelector(".detail-title-row .status-badge");
   badge.id = "workflow-status";
-  $("history-count").textContent = history.length.toLocaleString();
+  $("history-count").textContent = `${history.length.toLocaleString()}${state.historyTruncated ? "+" : ""}`;
 
   const terminal = TERMINAL_STATUSES.has(execution.status);
   $("open-signal").disabled = terminal || !roleAtLeast("operator");
@@ -627,16 +634,35 @@ async function selectExecution(id, options = {}) {
   try {
     const [execution, history] = await Promise.all([
       api(`/api/workflows/${encodeURIComponent(id)}`, { quiet }),
-      api(`/api/workflows/${encodeURIComponent(id)}/history`, { quiet }),
+      loadExecutionHistory(id, quiet),
     ]);
     if (generation !== state.detailGeneration || state.selected !== id) return;
     state.execution = execution;
-    state.history = history;
-    renderDetail(execution, history);
+    state.history = history.items;
+    state.historyTruncated = history.truncated;
+    renderDetail(execution, history.items);
   } catch (error) {
     if (generation !== state.detailGeneration) return;
     showDetailError(error);
   }
+}
+
+async function loadExecutionHistory(id, quiet) {
+  const items = [];
+  let afterSequence = 0;
+  for (let pageNumber = 0; pageNumber < 5; pageNumber += 1) {
+    const page = await api(
+      `/api/workflows/${encodeURIComponent(id)}/history?after_seq=${afterSequence}&limit=1000`,
+      { quiet },
+    );
+    items.push(...page.items);
+    if (page.next_after_seq === null) return { items, truncated: false };
+    afterSequence = page.next_after_seq;
+  }
+  const tail = await api(`/api/workflows/${encodeURIComponent(id)}/history-tail?limit=1000`, { quiet });
+  const merged = new Map(items.map((event) => [event.seq, event]));
+  for (const event of tail) merged.set(event.seq, event);
+  return { items: [...merged.values()].sort((left, right) => left.seq - right.seq), truncated: true };
 }
 
 async function loadHealth(quiet = false) {
@@ -822,6 +848,7 @@ function signOut() {
   state.stats = null;
   state.execution = null;
   state.history = [];
+  state.historyTruncated = false;
   state.selected = null;
   safeSessionSet("dwe-api-token", null);
   closeDialog("auth-dialog");

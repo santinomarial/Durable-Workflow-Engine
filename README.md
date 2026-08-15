@@ -87,6 +87,9 @@ cancellation controls, and termination. OpenAPI documentation is at `/docs`.
 Production authentication is fail closed and uses hashed bearer-key
 configuration with viewer, operator, and administrator roles. See the
 [security guide](docs/security.md) before exposing the control plane.
+The non-root container and hardened single-host reference topology are covered
+in the [deployment guide](docs/deployment.md); backup, restore drills, and
+history lifecycle constraints are covered in [data recovery](docs/backup-restore.md).
 
 ## Replay model
 
