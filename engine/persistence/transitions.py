@@ -60,7 +60,7 @@ def _decode_json(value: object) -> JSONValue:
     return cast(JSONValue, json.loads(value))
 
 
-def _history_event(row: dict[str, object]) -> HistoryEvent:
+def history_event_from_row(row: dict[str, object]) -> HistoryEvent:
     attributes = _decode_json(row["attributes"])
     if not isinstance(attributes, dict):
         raise TypeError("history attributes must be a JSON object")
@@ -227,7 +227,7 @@ async def load_workflow_replay_state(pool: Pool, task: LeasedTask) -> WorkflowRe
         workflow_type=cast(str, execution["workflow_type"]),
         definition_version=cast(int, execution["definition_version"]),
         workflow_input=_decode_json(execution["input"]),
-        history=tuple(_history_event(dict(row)) for row in rows),
+        history=tuple(history_event_from_row(dict(row)) for row in rows),
     )
 
 

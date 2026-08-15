@@ -11,6 +11,9 @@ requires-python = ">=3.12"
 authors = [{ name = "Santino Marial" }]
 dependencies = ["asyncpg>=0.30"]
 
+[project.scripts]
+engine = "engine.cli:main"
+
 [dependency-groups]
 dev = [
   "mypy>=1.17",
