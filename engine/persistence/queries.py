@@ -1,0 +1,115 @@
+"""Read-only execution and history inspection queries."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import datetime
+from typing import cast
+from uuid import UUID
+
+from engine.persistence.database import Pool
+from engine.runtime.serialization import JSONValue
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionSummary:
+    id: UUID
+    workflow_type: str
+    definition_version: int
+    queue_name: str
+    status: str
+    input: JSONValue
+    result: JSONValue
+    failure: JSONValue
+    next_seq: int
+    created_at: datetime
+    closed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryRecord:
+    seq: int
+    event_type: str
+    command_id: int | None
+    entity_id: UUID | None
+    external_id: str | None
+    attributes: JSONValue
+    created_at: datetime
+
+
+def _json(value: object) -> JSONValue:
+    if value is None:
+        return None
+    return cast(JSONValue, json.loads(cast(str, value)))
+
+
+def _execution(row: dict[str, object]) -> ExecutionSummary:
+    return ExecutionSummary(
+        id=cast(UUID, row["id"]),
+        workflow_type=cast(str, row["workflow_type"]),
+        definition_version=cast(int, row["definition_version"]),
+        queue_name=cast(str, row["queue_name"]),
+        status=str(row["status"]),
+        input=_json(row["input"]),
+        result=_json(row["result"]),
+        failure=_json(row["failure"]),
+        next_seq=cast(int, row["next_seq"]),
+        created_at=cast(datetime, row["created_at"]),
+        closed_at=cast(datetime | None, row["closed_at"]),
+    )
+
+
+async def list_executions(
+    pool: Pool,
+    *,
+    status: str | None = None,
+    limit: int = 100,
+) -> tuple[ExecutionSummary, ...]:
+    if limit < 1 or limit > 1000:
+        raise ValueError("limit must be between 1 and 1000")
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            select * from workflow_executions
+            where ($1::workflow_status is null or status = $1)
+            order by created_at desc, id
+            limit $2
+            """,
+            status,
+            limit,
+        )
+    return tuple(_execution(dict(row)) for row in rows)
+
+
+async def get_execution(pool: Pool, workflow_id: UUID) -> ExecutionSummary | None:
+    async with pool.acquire() as connection:
+        row = await connection.fetchrow(
+            "select * from workflow_executions where id = $1",
+            workflow_id,
+        )
+    return _execution(dict(row)) if row is not None else None
+
+
+async def get_history(pool: Pool, workflow_id: UUID) -> tuple[HistoryRecord, ...]:
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            select seq, event_type, command_id, entity_id, external_id,
+                   attributes, created_at
+            from history_events where workflow_id = $1 order by seq
+            """,
+            workflow_id,
+        )
+    return tuple(
+        HistoryRecord(
+            seq=cast(int, row["seq"]),
+            event_type=cast(str, row["event_type"]),
+            command_id=cast(int | None, row["command_id"]),
+            entity_id=cast(UUID | None, row["entity_id"]),
+            external_id=cast(str | None, row["external_id"]),
+            attributes=_json(row["attributes"]),
+            created_at=cast(datetime, row["created_at"]),
+        )
+        for row in rows
+    )

@@ -183,6 +183,53 @@ async def start_workflow(
     return StartedWorkflow(execution_id, workflow_type, definition_version)
 
 
+async def terminate_workflow(
+    pool: Pool,
+    *,
+    workflow_id: UUID,
+    reason: str | None = None,
+) -> bool:
+    """Atomically terminate a running workflow and invalidate all outstanding work."""
+    async with pool.acquire() as connection, connection.transaction():
+        execution = await connection.fetchrow(
+            "select status, next_seq from workflow_executions where id = $1 for update",
+            workflow_id,
+        )
+        if execution is None:
+            raise TransitionError(f"workflow {workflow_id} does not exist")
+        if execution["status"] == "terminated":
+            return False
+        if execution["status"] != "running":
+            raise TerminalWorkflowError(f"workflow {workflow_id} is {execution['status']}")
+        next_seq = cast(int, execution["next_seq"])
+        await connection.execute(
+            """
+            insert into history_events (workflow_id, seq, event_type, attributes)
+            values ($1, $2, 'WorkflowExecutionTerminated', $3::jsonb)
+            """,
+            workflow_id,
+            next_seq,
+            canonical_json({"reason": reason}),
+        )
+        await connection.execute(
+            """
+            update workflow_executions
+            set status = 'terminated', next_seq = $2, closed_at = now()
+            where id = $1
+            """,
+            workflow_id,
+            next_seq + 1,
+        )
+        await connection.execute(
+            """
+            update tasks set status = 'dead', completed_at = now()
+            where workflow_id = $1 and status in ('pending', 'leased')
+            """,
+            workflow_id,
+        )
+    return True
+
+
 async def load_workflow_replay_state(pool: Pool, task: LeasedTask) -> WorkflowReplayState:
     """Load the pinned definition identity and ordered history for a leased task."""
     if task.task_type != "workflow":

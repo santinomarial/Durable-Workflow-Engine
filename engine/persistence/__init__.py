@@ -10,6 +10,13 @@ from engine.persistence.leasing import (
     release_workflow_task,
     renew_lease,
 )
+from engine.persistence.queries import (
+    ExecutionSummary,
+    HistoryRecord,
+    get_execution,
+    get_history,
+    list_executions,
+)
 from engine.persistence.signals import send_signal
 from engine.persistence.timeouts import process_activity_timeout
 from engine.persistence.timers import fire_due_timer
@@ -22,9 +29,12 @@ from engine.persistence.transitions import (
     load_workflow_replay_state,
     register_workflow_definition,
     start_workflow,
+    terminate_workflow,
 )
 
 __all__ = [
+    "ExecutionSummary",
+    "HistoryRecord",
     "LeasedTask",
     "Pool",
     "StaleLeaseError",
@@ -35,8 +45,11 @@ __all__ = [
     "create_pool",
     "fail_activity",
     "fire_due_timer",
+    "get_execution",
+    "get_history",
     "heartbeat_activity",
     "lease_task",
+    "list_executions",
     "load_workflow_replay_state",
     "process_activity_timeout",
     "reclaim_expired_workflow_tasks",
@@ -45,4 +58,5 @@ __all__ = [
     "renew_lease",
     "send_signal",
     "start_workflow",
+    "terminate_workflow",
 ]
