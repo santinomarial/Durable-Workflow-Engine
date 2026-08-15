@@ -51,4 +51,15 @@ class StartChildWorkflow:
     fingerprint: str
 
 
-type Command = RecordMarker | ScheduleActivity | ScheduleTimer | StartChildWorkflow
+@dataclass(frozen=True, slots=True)
+class ResolveWorkflowUpdate:
+    command_id: int
+    update_id: str
+    accepted: bool
+    outcome: JSONValue
+    fingerprint: str
+
+
+type Command = (
+    RecordMarker | ResolveWorkflowUpdate | ScheduleActivity | ScheduleTimer | StartChildWorkflow
+)

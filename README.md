@@ -88,8 +88,10 @@ activity attempts and retry timing, a command/entity graph, signal and
 cancellation controls, pause/resume with frozen deadlines, safe retry-as-new,
 dead-letter inspection, durable timezone-aware cron schedules and backfills,
 deterministic child workflows with close-policy propagation, termination, and
-indexed JSON search attributes with server-side visibility filtering. OpenAPI
-documentation is at `/docs`.
+validated result-bearing workflow updates, typed Python handles and snapshot
+queries, and indexed JSON search attributes with server-side visibility
+filtering. OpenAPI documentation is at `/docs`; SDK examples are in the
+[Python SDK guide](docs/sdk.md).
 Production authentication is fail closed and uses hashed bearer-key
 configuration with viewer, operator, and administrator roles. See the
 [security guide](docs/security.md) before exposing the control plane.

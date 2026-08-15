@@ -19,6 +19,7 @@ migration compatibility remain explicit release requirements.
 - Durable pause/resume, dead-letter inspection, and linked retry-as-new recovery.
 - Timezone-aware durable cron schedules with overlap policies and bounded backfills.
 - Replay-native child workflows with atomic start, result propagation, and recursive parent-close policy.
+- Deduplicated result-bearing workflow updates, typed handles, and snapshot query projections.
 
 ## [0.1.0] - 2026-08-15
 

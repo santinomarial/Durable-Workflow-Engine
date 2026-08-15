@@ -11,6 +11,7 @@ const state = {
   selected: null,
   execution: null,
   history: [],
+  updates: [],
   historyTruncated: false,
   statusFilter: "",
   search: "",
@@ -608,6 +609,7 @@ function renderDetail(execution, history) {
 
   const terminal = TERMINAL_STATUSES.has(execution.status);
   $("open-signal").disabled = terminal || !roleAtLeast("operator");
+  $("open-update").disabled = terminal || !roleAtLeast("operator");
   $("open-attributes").disabled = !roleAtLeast("operator");
   $("request-cancel").disabled = terminal || Boolean(execution.cancellation_requested_at) || !roleAtLeast("operator");
   $("request-cancel").textContent = execution.cancellation_requested_at ? "Cancellation requested" : "Request cancellation";
@@ -620,6 +622,7 @@ function renderDetail(execution, history) {
   renderMetadata(execution);
   renderOperationalState(execution, history);
   renderActivities(history);
+  renderUpdates();
   renderEventFilters(history);
   renderHistory();
   renderGraph(history);
@@ -657,19 +660,32 @@ async function selectExecution(id, options = {}) {
   const generation = ++state.detailGeneration;
   if (!quiet || !state.execution || changed) showDetailLoading();
   try {
-    const [execution, history] = await Promise.all([
+    const [execution, history, updates] = await Promise.all([
       api(`/api/workflows/${encodeURIComponent(id)}`, { quiet }),
       loadExecutionHistory(id, quiet),
+      api(`/api/workflows/${encodeURIComponent(id)}/updates?limit=100`, { quiet }),
     ]);
     if (generation !== state.detailGeneration || state.selected !== id) return;
     state.execution = execution;
     state.history = history.items;
+    state.updates = updates;
     state.historyTruncated = history.truncated;
     renderDetail(execution, history.items);
   } catch (error) {
     if (generation !== state.detailGeneration) return;
     showDetailError(error);
   }
+}
+
+function renderUpdates() {
+  $("workflow-updates").replaceChildren(...state.updates.map((update) => element("article", {
+    className: "update-card",
+  }, [
+    element("div", {}, [element("strong", { text: update.name }), element("code", { text: update.update_id })]),
+    statusBadge(update.status),
+    element("span", { text: conciseValue(update.status === "completed" ? update.result : update.status === "rejected" ? update.failure : update.payload, 120) }),
+  ])));
+  $("updates-empty").hidden = state.updates.length > 0;
 }
 
 async function loadExecutionHistory(id, quiet) {
@@ -879,6 +895,7 @@ function signOut() {
   state.stats = null;
   state.execution = null;
   state.history = [];
+  state.updates = [];
   state.historyTruncated = false;
   state.selected = null;
   safeSessionSet("dwe-api-token", null);
@@ -979,6 +996,35 @@ async function sendSignal(event) {
     errorNode.hidden = false;
   } finally {
     setSubmitting(button, false, "Send signal");
+  }
+}
+
+async function requestWorkflowUpdate(event) {
+  event.preventDefault();
+  if (!state.selected) return;
+  const errorNode = $("update-error");
+  const button = $("update-submit");
+  errorNode.hidden = true;
+  try {
+    const name = $("update-name").value.trim();
+    if (!name) throw new Error("Update name is required.");
+    const payload = parseJSON($("update-payload").value, "Update payload");
+    const updateId = randomId();
+    setSubmitting(button, true, "Requesting…");
+    const response = await api(`/api/workflows/${encodeURIComponent(state.selected)}/updates`, {
+      method: "POST",
+      body: JSON.stringify({ update_id: updateId, name, payload }),
+    });
+    closeDialog("update-dialog");
+    toast("Update requested", response.accepted ? "Workflow code will validate and resolve this durable request." : "This update ID was already recorded.");
+    $("update-form").reset();
+    $("update-payload").value = "{}";
+    await loadDashboard();
+  } catch (error) {
+    errorNode.textContent = error.message;
+    errorNode.hidden = false;
+  } finally {
+    setSubmitting(button, false, "Request update");
   }
 }
 
@@ -1238,6 +1284,12 @@ function bindEvents() {
     $("signal-error").hidden = true;
     showDialog("signal-dialog", "signal-name");
   });
+  $("open-update").addEventListener("click", () => {
+    $("update-target").textContent = `${state.execution.workflow_type} · ${shortId(state.selected)}`;
+    $("update-error").hidden = true;
+    showDialog("update-dialog", "update-name");
+  });
+  $("update-form").addEventListener("submit", requestWorkflowUpdate);
   $("open-attributes").addEventListener("click", () => {
     $("attributes-json").value = JSON.stringify(state.execution?.search_attributes || {}, null, 2);
     $("attributes-error").hidden = true;

@@ -159,6 +159,7 @@
               </div>
               <div class="detail-actions">
                 <button id="open-signal" class="button button-secondary" type="button">Send signal</button>
+                <button id="open-update" class="button button-secondary" type="button">Request update</button>
                 <button id="open-attributes" class="button button-secondary" type="button">Edit attributes</button>
                 <button id="pause-resume" class="button button-secondary" type="button">Pause</button>
                 <button id="retry-workflow" class="button button-secondary" type="button" hidden>Retry as new</button>
@@ -203,6 +204,11 @@
                 </table>
               </div>
               <div id="activity-empty" class="inline-empty" hidden>No activities have been scheduled for this execution.</div>
+              <div class="content-heading update-heading">
+                <div><h3>Workflow updates</h3><p>Validated, result-bearing requests resolved by deterministic workflow code.</p></div>
+              </div>
+              <div id="workflow-updates" class="update-list"></div>
+              <div id="updates-empty" class="inline-empty" hidden>No workflow updates have been requested.</div>
             </div>
 
             <div id="panel-history" class="tab-panel" role="tabpanel" aria-labelledby="tab-history" hidden>
@@ -367,6 +373,28 @@
         <div class="dialog-footer">
           <button class="button button-secondary" type="button" data-close-dialog="signal-dialog">Cancel</button>
           <button id="signal-submit" class="button button-primary" type="submit">Send signal</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="update-dialog" class="dialog">
+      <form id="update-form" novalidate>
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Result-bearing request</p>
+            <h2>Request workflow update</h2>
+            <p id="update-target"></p>
+          </div>
+          <button class="dialog-close icon-button" type="button" data-close-dialog="update-dialog" aria-label="Close">×</button>
+        </div>
+        <div class="form-grid">
+          <label class="field field-wide"><span>Update name</span><input id="update-name" required placeholder="change_address" autocomplete="off"></label>
+          <label class="field field-wide"><span>Payload <small>JSON</small></span><textarea id="update-payload" rows="7" spellcheck="false">{}</textarea></label>
+        </div>
+        <p id="update-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-footer">
+          <button class="button button-secondary" type="button" data-close-dialog="update-dialog">Cancel</button>
+          <button id="update-submit" class="button button-primary" type="submit">Request update</button>
         </div>
       </form>
     </dialog>

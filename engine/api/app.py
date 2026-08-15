@@ -44,17 +44,20 @@ from engine.persistence import (
     get_history_page,
     get_history_tail,
     get_operational_gauges,
+    get_update,
     list_api_audit,
     list_dead_tasks,
     list_executions,
     list_schedule_occurrences,
     list_schedules,
+    list_updates,
     list_worker_heartbeats,
     pause_workflow,
     request_workflow_cancellation,
     resume_workflow,
     retry_workflow,
     send_signal,
+    send_update,
     set_schedule_paused,
     start_workflow,
     terminate_workflow,
@@ -81,6 +84,12 @@ class StartWorkflowRequest(BaseModel):
 
 class SignalRequest(BaseModel):
     signal_id: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    payload: Any = None
+
+
+class UpdateRequest(BaseModel):
+    update_id: str = Field(min_length=1, max_length=200)
     name: str = Field(min_length=1, max_length=200)
     payload: Any = None
 
@@ -575,6 +584,48 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
         except TransitionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return {"accepted": accepted}
+
+    @application.post("/api/workflows/{workflow_id}/updates", status_code=status.HTTP_202_ACCEPTED)
+    async def update_workflow(workflow_id: UUID, body: UpdateRequest, request: Request) -> Any:
+        principal = require_role(request, "operator")
+        try:
+            record, accepted = await send_update(
+                _pool(request),
+                workflow_id=workflow_id,
+                update_id=body.update_id,
+                name=body.name,
+                payload=cast(JSONValue, body.payload),
+                audit=_audit(request, principal, "workflow.update"),
+            )
+        except (TransitionError, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return jsonable_encoder({**asdict(record), "accepted": accepted})
+
+    @application.get("/api/workflows/{workflow_id}/updates")
+    async def workflow_updates(
+        workflow_id: UUID,
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    ) -> Any:
+        require_role(request, "viewer")
+        if await get_execution(_pool(request), workflow_id) is None:
+            raise HTTPException(status_code=404, detail="workflow not found")
+        return jsonable_encoder(
+            [
+                asdict(record)
+                for record in await list_updates(
+                    _pool(request), workflow_id=workflow_id, limit=limit
+                )
+            ]
+        )
+
+    @application.get("/api/workflows/{workflow_id}/updates/{update_id}")
+    async def workflow_update(workflow_id: UUID, update_id: str, request: Request) -> Any:
+        require_role(request, "viewer")
+        record = await get_update(_pool(request), workflow_id=workflow_id, update_id=update_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="workflow update not found")
+        return jsonable_encoder(asdict(record))
 
     @application.post("/api/workflows/{workflow_id}/terminate")
     async def terminate(

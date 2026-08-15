@@ -48,7 +48,7 @@ async def test_api_controls_and_inspects_workflow() -> None:
             health = await client.get("/api/health")
             assert health.json()["status"] == "ready"
             assert health.json()["database"] == "ok"
-            assert health.json()["schema_version"] == "0013"
+            assert health.json()["schema_version"] == "0014"
             assert health.headers["cache-control"] == "no-store"
             assert health.headers["x-content-type-options"] == "nosniff"
             assert health.headers["x-frame-options"] == "DENY"
@@ -236,6 +236,19 @@ async def test_api_controls_and_inspects_workflow() -> None:
                 },
             )
             cancel_id = cancel_started.json()["workflow_id"]
+            pending_update = await client.post(
+                f"/api/workflows/{cancel_id}/updates",
+                json={"update_id": "api-update", "name": "change", "payload": {"value": 2}},
+            )
+            duplicate_update = await client.post(
+                f"/api/workflows/{cancel_id}/updates",
+                json={"update_id": "api-update", "name": "change", "payload": {"value": 99}},
+            )
+            assert pending_update.status_code == 202
+            assert pending_update.json()["accepted"] is True
+            assert duplicate_update.json()["accepted"] is False
+            update_detail = await client.get(f"/api/workflows/{cancel_id}/updates/api-update")
+            assert update_detail.json()["status"] == "pending"
             cancellation = await client.post(
                 f"/api/workflows/{cancel_id}/cancel",
                 json={"reason": "API cancellation test"},
@@ -246,6 +259,8 @@ async def test_api_controls_and_inspects_workflow() -> None:
             )
             assert cancellation.json() == {"accepted": True}
             assert duplicate_cancellation.json() == {"accepted": False}
+            rejected_update = await client.get(f"/api/workflows/{cancel_id}/updates/api-update")
+            assert rejected_update.json()["status"] == "pending"
             cancelled_detail = await client.get(f"/api/workflows/{cancel_id}")
             assert cancelled_detail.json()["cancellation_reason"] == "API cancellation test"
 
@@ -269,6 +284,8 @@ async def test_api_controls_and_inspects_workflow() -> None:
                 "workflow.retry",
                 "workflow.cancel",
                 "workflow.cancel",
+                "workflow.update",
+                "workflow.update",
                 "workflow.start",
                 "workflow.terminate",
                 "workflow.signal",

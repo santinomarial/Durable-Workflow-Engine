@@ -18,6 +18,7 @@ from engine.persistence.database import Connection, Pool
 from engine.persistence.leasing import LeasedTask, StaleLeaseError
 from engine.runtime.commands import (
     RecordMarker,
+    ResolveWorkflowUpdate,
     ScheduleActivity,
     ScheduleTimer,
     StartChildWorkflow,
@@ -496,6 +497,9 @@ async def terminate_workflow(
             raise TerminalWorkflowError(f"workflow {workflow_id} is {execution['status']}")
         next_seq = cast(int, execution["next_seq"])
         await _terminate_descendants(connection, parent_workflow_id=workflow_id)
+        await _reject_pending_updates(
+            connection, workflow_id=workflow_id, reason="workflow terminated"
+        )
         next_seq = await _cancel_pending_timers(
             connection,
             workflow_id=workflow_id,
@@ -815,6 +819,69 @@ async def _append_marker_command(
     )
 
 
+async def _append_update_resolution(
+    connection: Connection,
+    *,
+    workflow_id: UUID,
+    seq: int,
+    command: ResolveWorkflowUpdate,
+) -> None:
+    status = "completed" if command.accepted else "rejected"
+    updated = await connection.fetchrow(
+        """
+        update workflow_updates
+        set status = $3::workflow_update_status,
+            result = case when $3 = 'completed' then $4::jsonb else null end,
+            failure = case when $3 = 'rejected' then $4::jsonb else null end,
+            completed_at = now()
+        where workflow_id = $1 and update_id = $2 and status = 'pending'
+        returning name
+        """,
+        workflow_id,
+        command.update_id,
+        status,
+        canonical_json(command.outcome),
+    )
+    if updated is None:
+        raise TransitionError(
+            f"workflow update {command.update_id!r} is missing or already resolved"
+        )
+    await connection.execute(
+        """
+        insert into history_events (
+          workflow_id, seq, event_type, command_id, external_id, attributes
+        ) values ($1, $2, 'WorkflowUpdateResolved', $3, $4, $5::jsonb)
+        """,
+        workflow_id,
+        seq,
+        command.command_id,
+        f"update-result:{command.update_id}",
+        canonical_json(
+            {
+                "update_id": command.update_id,
+                "name": cast(str, updated["name"]),
+                "accepted": command.accepted,
+                "outcome": command.outcome,
+                "fingerprint": command.fingerprint,
+            }
+        ),
+    )
+
+
+async def _reject_pending_updates(
+    connection: Connection, *, workflow_id: UUID, reason: str
+) -> None:
+    await connection.execute(
+        """
+        update workflow_updates
+        set status = 'rejected', failure = $2::jsonb, completed_at = now()
+        where workflow_id = $1 and status = 'pending'
+        """,
+        workflow_id,
+        canonical_json({"type": "WorkflowClosed", "message": reason}),
+    )
+
+
 async def _append_child_workflow_command(
     connection: Connection,
     *,
@@ -1008,6 +1075,9 @@ async def _terminate_descendants(connection: Connection, *, parent_workflow_id: 
             """,
             child_id,
         )
+        await _reject_pending_updates(
+            connection, workflow_id=child_id, reason="parent workflow closed"
+        )
 
 
 async def commit_workflow_replay(
@@ -1061,6 +1131,9 @@ async def commit_workflow_replay(
                 reason="workflow cancellation requested",
             )
             await _terminate_descendants(connection, parent_workflow_id=task.workflow_id)
+            await _reject_pending_updates(
+                connection, workflow_id=task.workflow_id, reason="workflow cancelled"
+            )
             await connection.execute(
                 """
                 insert into history_events (workflow_id, seq, event_type, attributes)
@@ -1136,6 +1209,14 @@ async def commit_workflow_replay(
                         command=command,
                         parent_queue_name=cast(str, locked_task["queue_name"]),
                     )
+                elif isinstance(command, ResolveWorkflowUpdate):
+                    await _append_update_resolution(
+                        connection,
+                        workflow_id=task.workflow_id,
+                        seq=next_seq,
+                        command=command,
+                    )
+                    marker_recorded = True
                 next_seq += 1
             if marker_recorded:
                 await connection.execute(
@@ -1157,6 +1238,9 @@ async def commit_workflow_replay(
             event_type = "WorkflowExecutionCompleted" if completed else "WorkflowExecutionFailed"
             payload = replay.result if completed else replay.failure
             await _terminate_descendants(connection, parent_workflow_id=task.workflow_id)
+            await _reject_pending_updates(
+                connection, workflow_id=task.workflow_id, reason="workflow closed"
+            )
             next_seq = await _cancel_pending_timers(
                 connection,
                 workflow_id=task.workflow_id,

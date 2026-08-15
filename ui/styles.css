@@ -322,6 +322,8 @@ h2 { letter-spacing: -.025em; }
 .status-badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .status-badge.status-running { border-color: color-mix(in srgb, var(--blue) 35%, var(--line)); color: var(--blue); }
 .status-badge.status-paused { border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); color: var(--amber); }
+.status-badge.status-pending { border-color: color-mix(in srgb, var(--blue) 35%, var(--line)); color: var(--blue); }
+.status-badge.status-rejected { border-color: color-mix(in srgb, var(--red) 35%, var(--line)); color: var(--red); }
 .status-badge.status-completed { border-color: color-mix(in srgb, var(--green) 35%, var(--line)); color: var(--green); }
 .status-badge.status-failed, .status-badge.status-terminated { border-color: color-mix(in srgb, var(--red) 35%, var(--line)); color: var(--red); }
 
@@ -378,6 +380,10 @@ kbd { display: inline-grid; min-width: 21px; min-height: 20px; margin: 0 2px; pl
 .schedule-card strong, .schedule-card small { display: block; }
 .schedule-card small { margin-top: 3px; color: var(--text-muted); }
 .schedule-expression { color: var(--accent); font: 650 11px/1.4 var(--font-mono); }
+.update-heading { margin-top: 24px; }
+.update-list { display: grid; gap: 8px; }
+.update-card { display: grid; grid-template-columns: minmax(150px, 1fr) auto minmax(180px, 1.5fr); align-items: center; gap: 12px; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); }
+.update-card code { color: var(--text-muted); font-size: 10px; }
 
 .operational-state { display: flex; align-items: center; gap: 15px; margin: 22px 30px 0; padding: 15px 17px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px; background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface)); }
 .operational-state h3 { margin-bottom: 2px; font-size: 14px; letter-spacing: -.01em; }

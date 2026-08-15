@@ -62,6 +62,12 @@ from engine.persistence.transitions import (
     terminate_workflow,
     update_search_attributes,
 )
+from engine.persistence.updates import (
+    WorkflowUpdateRecord,
+    get_update,
+    list_updates,
+    send_update,
+)
 from engine.sdk.activity_context import ActivityCancellationRequested
 
 __all__ = [
@@ -81,6 +87,7 @@ __all__ = [
     "WorkerHeartbeat",
     "WorkflowReplayState",
     "WorkflowSchedule",
+    "WorkflowUpdateRecord",
     "backfill_schedule",
     "commit_workflow_replay",
     "complete_activity",
@@ -95,6 +102,7 @@ __all__ = [
     "get_history_page",
     "get_history_tail",
     "get_operational_gauges",
+    "get_update",
     "heartbeat_activity",
     "heartbeat_worker",
     "lease_task",
@@ -103,6 +111,7 @@ __all__ = [
     "list_executions",
     "list_schedule_occurrences",
     "list_schedules",
+    "list_updates",
     "list_worker_heartbeats",
     "load_workflow_replay_state",
     "materialize_due_schedule",
@@ -117,6 +126,7 @@ __all__ = [
     "resume_workflow",
     "retry_workflow",
     "send_signal",
+    "send_update",
     "set_schedule_paused",
     "start_workflow",
     "stop_worker",

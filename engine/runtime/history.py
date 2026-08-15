@@ -8,7 +8,13 @@ from uuid import UUID
 from engine.runtime.serialization import JSONValue
 
 SCHEDULE_EVENT_TYPES = frozenset(
-    {"ActivityScheduled", "TimerStarted", "MarkerRecorded", "ChildWorkflowStarted"}
+    {
+        "ActivityScheduled",
+        "TimerStarted",
+        "MarkerRecorded",
+        "ChildWorkflowStarted",
+        "WorkflowUpdateResolved",
+    }
 )
 ACTIVITY_TERMINAL_EVENT_TYPES = frozenset(
     {"ActivityCompleted", "ActivityFailed", "ActivityTimedOut"}
@@ -51,6 +57,7 @@ class HistoryIndex:
         self.timer_terminal: dict[UUID, HistoryEvent] = {}
         self.child_terminal: dict[UUID, HistoryEvent] = {}
         self.signals: list[HistoryEvent] = []
+        self.updates: list[HistoryEvent] = []
         self.cancellation_requested: HistoryEvent | None = None
         self.workflow_terminal: HistoryEvent | None = None
         previous_seq = 0
@@ -73,7 +80,15 @@ class HistoryIndex:
                     raise InvalidHistoryError(
                         f"{event.event_type} at sequence {event.seq} lacks command identity"
                     )
-                if event.event_type != "MarkerRecorded" and event.entity_id is None:
+                if (
+                    event.event_type
+                    in {
+                        "ActivityScheduled",
+                        "TimerStarted",
+                        "ChildWorkflowStarted",
+                    }
+                    and event.entity_id is None
+                ):
                     raise InvalidHistoryError(
                         f"{event.event_type} at sequence {event.seq} lacks entity identity"
                     )
@@ -142,6 +157,18 @@ class HistoryIndex:
                         f"SignalReceived at sequence {event.seq} has no external identity"
                     )
                 self.signals.append(event)
+            if event.event_type == "WorkflowUpdateReceived":
+                name = event.attributes.get("name")
+                update_id = event.attributes.get("update_id")
+                if not isinstance(name, str) or not name:
+                    raise InvalidHistoryError(
+                        f"WorkflowUpdateReceived at sequence {event.seq} has no name"
+                    )
+                if not isinstance(update_id, str) or not update_id:
+                    raise InvalidHistoryError(
+                        f"WorkflowUpdateReceived at sequence {event.seq} has no update ID"
+                    )
+                self.updates.append(event)
             if event.event_type == "WorkflowCancellationRequested":
                 if self.cancellation_requested is not None:
                     raise InvalidHistoryError("workflow cancellation was requested more than once")

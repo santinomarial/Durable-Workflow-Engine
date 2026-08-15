@@ -13,6 +13,7 @@ from engine.sdk.context import (
     NonDeterminismError,
     SignalTimeoutError,
     WorkflowContext,
+    WorkflowUpdate,
 )
 from engine.sdk.decorators import activity, workflow
 from engine.sdk.policies import RetryPolicy
@@ -28,6 +29,7 @@ __all__ = [
     "RetryPolicy",
     "SignalTimeoutError",
     "WorkflowContext",
+    "WorkflowUpdate",
     "activity",
     "current_activity_context",
     "workflow",

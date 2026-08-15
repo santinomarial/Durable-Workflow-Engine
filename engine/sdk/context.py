@@ -11,6 +11,7 @@ from uuid import UUID, uuid5
 from engine.runtime.commands import (
     Command,
     RecordMarker,
+    ResolveWorkflowUpdate,
     ScheduleActivity,
     ScheduleTimer,
     StartChildWorkflow,
@@ -52,6 +53,13 @@ class ChildWorkflowError(RuntimeError):
         self.workflow_type = workflow_type
         self.failure = failure
         super().__init__(f"child workflow {workflow_type!r} failed: {failure!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowUpdate:
+    id: str
+    name: str
+    payload: JSONValue
 
 
 class _ReplaySuspended(BaseException):
@@ -107,6 +115,7 @@ class WorkflowContext:
         self._history = history
         self._next_command_id = 0
         self._consumed_signal_seqs: set[int] = set()
+        self._consumed_update_seqs: set[int] = set()
 
     @property
     def next_command_id(self) -> int:
@@ -503,3 +512,62 @@ class WorkflowContext:
         if timer_terminal is not None and timer_terminal.event_type == "TimerFired":
             raise SignalTimeoutError(name)
         raise _Blocked
+
+    async def wait_update(self, name: str) -> WorkflowUpdate:
+        """Consume the earliest matching durable, result-bearing update request."""
+        if not name:
+            raise ValueError("update name cannot be empty")
+        for event in self._history.updates:
+            if event.seq in self._consumed_update_seqs:
+                continue
+            if event.attributes.get("name") != name:
+                continue
+            update_id = event.attributes.get("update_id")
+            if not isinstance(update_id, str):
+                raise NonDeterminismError(self._next_command_id, "update has no identity")
+            self._consumed_update_seqs.add(event.seq)
+            return WorkflowUpdate(
+                id=update_id,
+                name=name,
+                payload=clone_json(event.attributes.get("payload")),
+            )
+        raise _Blocked
+
+    def resolve_update(
+        self,
+        update: WorkflowUpdate,
+        outcome: JSONValue = None,
+        *,
+        accepted: bool = True,
+    ) -> None:
+        """Deterministically complete or reject a consumed workflow update."""
+        command_id = self._next_command_id
+        self._next_command_id += 1
+        detached_outcome = clone_json(outcome)
+        identity: dict[str, JSONValue] = {
+            "command_type": "resolve_update",
+            "update_id": update.id,
+            "accepted": accepted,
+            "outcome": detached_outcome,
+        }
+        command_fingerprint = fingerprint(identity)
+        recorded = self._history.scheduled.get(command_id)
+        if recorded is None:
+            raise _NewCommands(
+                (
+                    ResolveWorkflowUpdate(
+                        command_id=command_id,
+                        update_id=update.id,
+                        accepted=accepted,
+                        outcome=detached_outcome,
+                        fingerprint=command_fingerprint,
+                    ),
+                )
+            )
+        if recorded.event_type != "WorkflowUpdateResolved":
+            raise NonDeterminismError(
+                command_id,
+                f"expected update resolution, history contains {recorded.event_type}",
+            )
+        if recorded.attributes.get("fingerprint") != command_fingerprint:
+            raise NonDeterminismError(command_id, "workflow update resolution changed")
