@@ -6,14 +6,18 @@ import argparse
 import asyncio
 import importlib
 import json
+import logging
 import os
 from dataclasses import asdict
 from typing import cast
 from uuid import UUID
 
-from engine.persistence import create_pool
-from engine.runtime.definitions import WorkflowDefinition
+from engine.persistence import Pool, create_pool, register_workflow_definition, start_workflow
+from engine.persistence.migrations import migrate
+from engine.runtime.definitions import DefinitionRegistry, WorkflowDefinition
 from engine.runtime.replay_check import replay_check
+from engine.runtime.serialization import JSONValue
+from engine.workers import WorkerRole, run_worker
 
 
 def _load_definition(reference: str) -> WorkflowDefinition:
@@ -24,6 +28,25 @@ def _load_definition(reference: str) -> WorkflowDefinition:
     if not isinstance(value, WorkflowDefinition):
         raise TypeError(f"{reference} is not a workflow definition")
     return value
+
+
+def _load_registry(reference: str) -> DefinitionRegistry:
+    module_name, separator, attribute = reference.partition(":")
+    if not separator or not module_name or not attribute:
+        raise ValueError("definitions must use module:attribute syntax")
+    value = getattr(importlib.import_module(module_name), attribute)
+    if not isinstance(value, DefinitionRegistry):
+        raise TypeError(f"{reference} is not a definition registry")
+    return value
+
+
+def _json_input(raw: str) -> JSONValue:
+    return cast(JSONValue, json.loads(raw))
+
+
+async def _registered_pool(database_url: str) -> Pool:
+    await migrate(database_url)
+    return await create_pool(database_url)
 
 
 async def _run_replay_check(args: argparse.Namespace) -> int:
@@ -47,6 +70,73 @@ async def _run_replay_check(args: argparse.Namespace) -> int:
     return 0 if report.compatible else 1
 
 
+async def _run_register(args: argparse.Namespace) -> int:
+    database_url = cast(str, args.database_url)
+    registry = _load_registry(cast(str, args.definitions))
+    pool = await _registered_pool(database_url)
+    try:
+        for definition in registry.workflows:
+            await register_workflow_definition(pool, definition)
+    finally:
+        await pool.close()
+    print(
+        json.dumps(
+            {
+                "registered": [
+                    {"workflow_type": item.name, "version": item.version}
+                    for item in registry.workflows
+                ]
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+async def _run_start(args: argparse.Namespace) -> int:
+    pool = await _registered_pool(cast(str, args.database_url))
+    try:
+        started = await start_workflow(
+            pool,
+            workflow_type=cast(str, args.workflow_type),
+            definition_version=cast(int, args.version),
+            workflow_input=_json_input(cast(str, args.input)),
+            queue_name=cast(str, args.queue),
+        )
+    finally:
+        await pool.close()
+    print(json.dumps(asdict(started), default=str, sort_keys=True))
+    return 0
+
+
+async def _run_worker(args: argparse.Namespace) -> int:
+    database_url = cast(str, args.database_url)
+    registry = _load_registry(cast(str, args.definitions))
+    pool = await _registered_pool(database_url)
+    try:
+        for definition in registry.workflows:
+            await register_workflow_definition(pool, definition)
+        roles = cast(list[WorkerRole] | None, args.role)
+        await run_worker(
+            pool,
+            registry,
+            queue_name=cast(str, args.queue),
+            roles=roles or ("workflow", "activity", "maintenance"),
+            idle_delay=cast(float, args.poll_interval),
+        )
+    finally:
+        await pool.close()
+    return 0
+
+
+def _database_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("DATABASE_URL"),
+        required=os.environ.get("DATABASE_URL") is None,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="engine")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -56,19 +146,50 @@ def build_parser() -> argparse.ArgumentParser:
     replay_parser.add_argument("workflow_id")
     replay_parser.add_argument("--against-version", type=int, required=True)
     replay_parser.add_argument("--definition", required=True, help="module:attribute")
-    replay_parser.add_argument(
-        "--database-url",
-        default=os.environ.get("DATABASE_URL"),
-        required=os.environ.get("DATABASE_URL") is None,
+    _database_argument(replay_parser)
+
+    register_parser = subparsers.add_parser(
+        "register", help="persist immutable workflow definitions from a registry"
     )
+    register_parser.add_argument("--definitions", required=True, help="module:registry")
+    _database_argument(register_parser)
+
+    start_parser = subparsers.add_parser("start", help="start a registered workflow")
+    start_parser.add_argument("workflow_type")
+    start_parser.add_argument("--version", type=int, required=True)
+    start_parser.add_argument("--input", default="null", help="JSON workflow input")
+    start_parser.add_argument("--queue", default="default")
+    _database_argument(start_parser)
+
+    worker_parser = subparsers.add_parser("worker", help="run continuous worker loops")
+    worker_parser.add_argument("--definitions", required=True, help="module:registry")
+    worker_parser.add_argument("--queue", default="default")
+    worker_parser.add_argument(
+        "--role",
+        action="append",
+        choices=("workflow", "activity", "maintenance"),
+        help="worker role to run; repeat it, or omit for all roles",
+    )
+    worker_parser.add_argument("--poll-interval", type=float, default=0.05)
+    _database_argument(worker_parser)
     return parser
 
 
 def main() -> None:
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     parser = build_parser()
     args = parser.parse_args()
     if args.command == "replay-check":
         raise SystemExit(asyncio.run(_run_replay_check(args)))
+    if args.command == "register":
+        raise SystemExit(asyncio.run(_run_register(args)))
+    if args.command == "start":
+        raise SystemExit(asyncio.run(_run_start(args)))
+    if args.command == "worker":
+        try:
+            raise SystemExit(asyncio.run(_run_worker(args)))
+        except KeyboardInterrupt:
+            raise SystemExit(130) from None
 
 
 if __name__ == "__main__":

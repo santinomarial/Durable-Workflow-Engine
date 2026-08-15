@@ -112,3 +112,13 @@ class DefinitionRegistry:
         return tuple(
             sorted(version for workflow_name, version in self._workflows if workflow_name == name)
         )
+
+    @property
+    def workflows(self) -> tuple[WorkflowDefinition, ...]:
+        """Registered workflows in stable name/version order."""
+        return tuple(self._workflows[key] for key in sorted(self._workflows))
+
+    @property
+    def activities(self) -> tuple[ActivityDefinition, ...]:
+        """Registered activities in stable name order."""
+        return tuple(self._activities[name] for name in sorted(self._activities))
