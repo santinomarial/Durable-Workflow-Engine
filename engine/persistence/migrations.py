@@ -13,7 +13,11 @@ from typing import Protocol
 import asyncpg  # type: ignore[import-untyped]
 
 MIGRATION_LOCK_ID = 1_196_643_087
-DEFAULT_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
+_PACKAGED_MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "_assets" / "migrations"
+_SOURCE_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
+DEFAULT_MIGRATIONS_DIR = (
+    _PACKAGED_MIGRATIONS_DIR if _PACKAGED_MIGRATIONS_DIR.exists() else _SOURCE_MIGRATIONS_DIR
+)
 
 
 class MigrationError(RuntimeError):

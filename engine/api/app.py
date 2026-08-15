@@ -31,7 +31,9 @@ from engine.persistence.migrations import migrate
 from engine.persistence.transitions import TransitionError
 from engine.runtime.serialization import JSONValue
 
-UI_DIR = Path(__file__).resolve().parents[2] / "ui"
+_PACKAGED_UI_DIR = Path(__file__).resolve().parents[1] / "_assets" / "ui"
+_SOURCE_UI_DIR = Path(__file__).resolve().parents[2] / "ui"
+UI_DIR = _PACKAGED_UI_DIR if _PACKAGED_UI_DIR.exists() else _SOURCE_UI_DIR
 WorkflowStatus = Literal["running", "completed", "failed", "terminated"]
 
 

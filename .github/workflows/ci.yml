@@ -30,6 +30,8 @@ jobs:
         run: uv run ruff check .
       - name: Type check
         run: uv run mypy
+      - name: Build wheel and source distribution
+        run: uv build
       - name: Unit tests
         run: uv run pytest -m "not integration and not chaos"
 
