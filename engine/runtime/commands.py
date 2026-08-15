@@ -31,4 +31,12 @@ class ScheduleTimer:
     fingerprint: str
 
 
-type Command = ScheduleActivity | ScheduleTimer
+@dataclass(frozen=True, slots=True)
+class RecordMarker:
+    command_id: int
+    marker_type: str
+    value: JSONValue
+    fingerprint: str
+
+
+type Command = RecordMarker | ScheduleActivity | ScheduleTimer

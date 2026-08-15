@@ -15,7 +15,7 @@ from uuid import UUID, uuid4
 
 from engine.persistence.database import Connection, Pool
 from engine.persistence.leasing import LeasedTask, StaleLeaseError
-from engine.runtime.commands import ScheduleActivity, ScheduleTimer
+from engine.runtime.commands import RecordMarker, ScheduleActivity, ScheduleTimer
 from engine.runtime.definitions import WorkflowDefinition
 from engine.runtime.history import HistoryEvent
 from engine.runtime.replay import ReplayResult, ReplayStatus
@@ -121,6 +121,7 @@ async def start_workflow(
         raise ValueError("queue_name cannot be empty")
 
     execution_id = workflow_id or uuid4()
+    started_at = datetime.now(UTC)
     detached_input = clone_json(workflow_input)
     encoded_input = canonical_json(detached_input)
     started_attributes = canonical_json(
@@ -128,6 +129,7 @@ async def start_workflow(
             "workflow_type": workflow_type,
             "definition_version": definition_version,
             "input": detached_input,
+            "started_at": started_at.isoformat(),
         }
     )
     task_id = uuid4()
@@ -152,14 +154,15 @@ async def start_workflow(
         await connection.execute(
             """
             insert into workflow_executions (
-              id, workflow_type, definition_version, input, next_seq, queue_name
-            ) values ($1, $2, $3, $4::jsonb, 2, $5)
+              id, workflow_type, definition_version, input, next_seq, queue_name, created_at
+            ) values ($1, $2, $3, $4::jsonb, 2, $5, $6)
             """,
             execution_id,
             workflow_type,
             definition_version,
             encoded_input,
             queue_name,
+            started_at,
         )
         await connection.execute(
             """
@@ -398,6 +401,32 @@ async def _append_timer_command(
     )
 
 
+async def _append_marker_command(
+    connection: Connection,
+    *,
+    workflow_id: UUID,
+    seq: int,
+    command: RecordMarker,
+) -> None:
+    await connection.execute(
+        """
+        insert into history_events (
+          workflow_id, seq, event_type, command_id, attributes
+        ) values ($1, $2, 'MarkerRecorded', $3, $4::jsonb)
+        """,
+        workflow_id,
+        seq,
+        command.command_id,
+        canonical_json(
+            {
+                "marker_type": command.marker_type,
+                "value": command.value,
+                "fingerprint": command.fingerprint,
+            }
+        ),
+    )
+
+
 async def commit_workflow_replay(
     pool: Pool,
     *,
@@ -439,6 +468,7 @@ async def commit_workflow_replay(
         if replay.status is ReplayStatus.COMMANDS:
             if not replay.commands:
                 raise TransitionError("commands replay result contains no commands")
+            marker_recorded = False
             for command in replay.commands:
                 if isinstance(command, ScheduleActivity):
                     await _append_activity_command(
@@ -456,7 +486,25 @@ async def commit_workflow_replay(
                         command=command,
                         queue_name=cast(str, locked_task["queue_name"]),
                     )
+                elif isinstance(command, RecordMarker):
+                    await _append_marker_command(
+                        connection,
+                        workflow_id=task.workflow_id,
+                        seq=next_seq,
+                        command=command,
+                    )
+                    marker_recorded = True
                 next_seq += 1
+            if marker_recorded:
+                await connection.execute(
+                    """
+                    insert into tasks (id, workflow_id, task_type, queue_name)
+                    values ($1, $2, 'workflow', $3)
+                    """,
+                    uuid4(),
+                    task.workflow_id,
+                    locked_task["queue_name"],
+                )
             await connection.execute(
                 "update workflow_executions set next_seq = $2 where id = $1",
                 task.workflow_id,

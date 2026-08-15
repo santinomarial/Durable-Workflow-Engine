@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Generator
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid5
 
-from engine.runtime.commands import Command, ScheduleActivity, ScheduleTimer
+from engine.runtime.commands import Command, RecordMarker, ScheduleActivity, ScheduleTimer
 from engine.runtime.definitions import ActivityDefinition
 from engine.runtime.history import HistoryIndex
 from engine.runtime.serialization import JSONValue, clone_json, fingerprint
@@ -103,6 +104,94 @@ class WorkflowContext:
             start_to_close=start_to_close,
             heartbeat_timeout=heartbeat_timeout,
         )
+
+    def _derived_marker_value(self, marker_type: str, command_id: int) -> JSONValue:
+        seed = f"{self._workflow_id}:{marker_type}:{command_id}".encode()
+        digest = hashlib.sha256(seed).digest()
+        if marker_type == "now":
+            started_at = self._history.events[0].attributes.get("started_at")
+            if isinstance(started_at, str):
+                try:
+                    base = datetime.fromisoformat(started_at)
+                except ValueError:
+                    base = datetime(2020, 1, 1, tzinfo=UTC)
+            else:
+                stable_seconds = int.from_bytes(digest[:4], "big") % (366 * 24 * 60 * 60)
+                base = datetime(2020, 1, 1, tzinfo=UTC) + timedelta(seconds=stable_seconds)
+            if base.tzinfo is None:
+                base = base.replace(tzinfo=UTC)
+            return (base + timedelta(microseconds=command_id)).isoformat()
+        if marker_type == "random":
+            return (int.from_bytes(digest[:8], "big") >> 11) / float(1 << 53)
+        if marker_type == "uuid":
+            return str(uuid5(ENTITY_NAMESPACE, seed.decode()))
+        raise ValueError(f"unknown deterministic marker type {marker_type!r}")
+
+    def _marker(self, marker_type: str) -> JSONValue:
+        command_id = self._next_command_id
+        self._next_command_id += 1
+        identity: dict[str, JSONValue] = {
+            "command_type": "marker",
+            "marker_type": marker_type,
+        }
+        command_fingerprint = fingerprint(identity)
+        scheduled = self._history.scheduled.get(command_id)
+        if scheduled is None:
+            raise _NewCommands(
+                (
+                    RecordMarker(
+                        command_id=command_id,
+                        marker_type=marker_type,
+                        value=self._derived_marker_value(marker_type, command_id),
+                        fingerprint=command_fingerprint,
+                    ),
+                )
+            )
+        if scheduled.event_type != "MarkerRecorded":
+            raise NonDeterminismError(
+                command_id,
+                f"expected {marker_type} marker, history contains {scheduled.event_type}",
+            )
+        if (
+            scheduled.attributes.get("marker_type") != marker_type
+            or scheduled.attributes.get("fingerprint") != command_fingerprint
+        ):
+            raise NonDeterminismError(command_id, f"deterministic {marker_type} call changed")
+        return clone_json(scheduled.attributes.get("value"))
+
+    def now(self) -> datetime:
+        """Return recorded workflow time without consulting the wall clock during replay."""
+        value = self._marker("now")
+        if not isinstance(value, str):
+            raise NonDeterminismError(self._next_command_id - 1, "now marker is not a timestamp")
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as error:
+            raise NonDeterminismError(
+                self._next_command_id - 1, "now marker is not a timestamp"
+            ) from error
+        if parsed.tzinfo is None:
+            raise NonDeterminismError(self._next_command_id - 1, "now marker has no timezone")
+        return parsed
+
+    def random(self) -> float:
+        """Return a recorded deterministic random value in the half-open interval [0, 1)."""
+        value = self._marker("random")
+        if not isinstance(value, float) or not 0 <= value < 1:
+            raise NonDeterminismError(self._next_command_id - 1, "random marker is invalid")
+        return value
+
+    def uuid(self) -> UUID:
+        """Return a recorded deterministic UUID."""
+        value = self._marker("uuid")
+        if not isinstance(value, str):
+            raise NonDeterminismError(self._next_command_id - 1, "UUID marker is invalid")
+        try:
+            return UUID(value)
+        except ValueError as error:
+            raise NonDeterminismError(
+                self._next_command_id - 1, "UUID marker is invalid"
+            ) from error
 
     def _evaluate_activity(self, call: ActivityCall) -> JSONValue:
         if call.context is not self:

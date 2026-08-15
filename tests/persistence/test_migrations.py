@@ -14,6 +14,7 @@ def test_discovers_ordered_migrations() -> None:
         "0003",
         "0004",
         "0005",
+        "0006",
     ]
     assert migrations[0].name == "initial"
     assert "create table workflow_executions" in migrations[0].sql

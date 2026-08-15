@@ -7,7 +7,7 @@ from uuid import UUID
 
 from engine.runtime.serialization import JSONValue
 
-SCHEDULE_EVENT_TYPES = frozenset({"ActivityScheduled", "TimerStarted"})
+SCHEDULE_EVENT_TYPES = frozenset({"ActivityScheduled", "TimerStarted", "MarkerRecorded"})
 ACTIVITY_TERMINAL_EVENT_TYPES = frozenset(
     {"ActivityCompleted", "ActivityFailed", "ActivityTimedOut"}
 )
@@ -45,16 +45,21 @@ class HistoryIndex:
                 )
             previous_seq = event.seq
             if event.event_type in SCHEDULE_EVENT_TYPES:
-                if event.command_id is None or event.entity_id is None:
+                if event.command_id is None:
                     raise InvalidHistoryError(
-                        f"{event.event_type} at sequence {event.seq} lacks command/entity identity"
+                        f"{event.event_type} at sequence {event.seq} lacks command identity"
+                    )
+                if event.event_type != "MarkerRecorded" and event.entity_id is None:
+                    raise InvalidHistoryError(
+                        f"{event.event_type} at sequence {event.seq} lacks entity identity"
                     )
                 if event.command_id in self.scheduled:
                     raise InvalidHistoryError(f"command {event.command_id} was scheduled twice")
-                if event.entity_id in self.scheduled_entities:
-                    raise InvalidHistoryError(f"entity {event.entity_id} was scheduled twice")
                 self.scheduled[event.command_id] = event
-                self.scheduled_entities[event.entity_id] = event
+                if event.entity_id is not None:
+                    if event.entity_id in self.scheduled_entities:
+                        raise InvalidHistoryError(f"entity {event.entity_id} was scheduled twice")
+                    self.scheduled_entities[event.entity_id] = event
             if event.event_type in ACTIVITY_TERMINAL_EVENT_TYPES:
                 if event.entity_id is None:
                     raise InvalidHistoryError(

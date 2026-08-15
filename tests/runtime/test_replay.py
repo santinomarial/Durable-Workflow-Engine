@@ -3,7 +3,7 @@ from uuid import UUID
 
 import pytest
 
-from engine.runtime.commands import ScheduleActivity, ScheduleTimer
+from engine.runtime.commands import RecordMarker, ScheduleActivity, ScheduleTimer
 from engine.runtime.history import HistoryEvent, InvalidHistoryError
 from engine.runtime.replay import ReplayStatus, replay_workflow
 from engine.runtime.serialization import JSONValue
@@ -125,6 +125,89 @@ async def test_replay_emits_stable_command_identity() -> None:
     )
 
     assert left == right
+
+
+@workflow(version=1, name="deterministic-values")
+async def deterministic_values(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    del value
+    return {
+        "now": ctx.now().isoformat(),
+        "random": ctx.random(),
+        "uuid": str(ctx.uuid()),
+    }
+
+
+def recorded_marker(seq: int, command: RecordMarker) -> HistoryEvent:
+    return HistoryEvent(
+        seq,
+        "MarkerRecorded",
+        {
+            "marker_type": command.marker_type,
+            "value": command.value,
+            "fingerprint": command.fingerprint,
+        },
+        command_id=command.command_id,
+    )
+
+
+async def test_deterministic_values_are_recorded_and_replayed() -> None:
+    history = (started(),)
+    values: dict[str, JSONValue] = {}
+    for marker_type in ("now", "random", "uuid"):
+        left = await replay_workflow(
+            deterministic_values,
+            workflow_id=WORKFLOW_ID,
+            workflow_input=None,
+            history=history,
+        )
+        right = await replay_workflow(
+            deterministic_values,
+            workflow_id=WORKFLOW_ID,
+            workflow_input=None,
+            history=history,
+        )
+        assert left == right
+        assert left.status is ReplayStatus.COMMANDS
+        command = left.commands[0]
+        assert isinstance(command, RecordMarker)
+        assert command.marker_type == marker_type
+        values[marker_type] = command.value
+        history = (*history, recorded_marker(len(history) + 1, command))
+
+    replay = await replay_workflow(
+        deterministic_values,
+        workflow_id=WORKFLOW_ID,
+        workflow_input=None,
+        history=history,
+    )
+    assert replay.status is ReplayStatus.COMPLETED
+    assert replay.result == values
+
+
+async def test_deterministic_value_type_change_reports_first_divergence() -> None:
+    replay = await replay_workflow(
+        deterministic_values,
+        workflow_id=WORKFLOW_ID,
+        workflow_input=None,
+        history=(started(),),
+    )
+    now_marker = replay.commands[0]
+    assert isinstance(now_marker, RecordMarker)
+    changed = recorded_marker(2, now_marker)
+    changed = HistoryEvent(
+        changed.seq,
+        changed.event_type,
+        {**changed.attributes, "marker_type": "uuid"},
+        command_id=changed.command_id,
+    )
+
+    with pytest.raises(NonDeterminismError, match="non-determinism at command 0"):
+        await replay_workflow(
+            deterministic_values,
+            workflow_id=WORKFLOW_ID,
+            workflow_input=None,
+            history=(started(), changed),
+        )
 
 
 async def test_replay_reports_changed_command_fingerprint() -> None:
