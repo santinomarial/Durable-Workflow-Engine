@@ -10,7 +10,7 @@ from engine.runtime.commands import Command
 from engine.runtime.definitions import WorkflowDefinition
 from engine.runtime.history import HistoryEvent, HistoryIndex
 from engine.runtime.serialization import JSONValue, clone_json
-from engine.sdk.context import NonDeterminismError, WorkflowContext, _Blocked, _NewCommand
+from engine.sdk.context import NonDeterminismError, WorkflowContext, _Blocked, _NewCommands
 
 
 class ReplayStatus(StrEnum):
@@ -39,8 +39,8 @@ async def replay_workflow(
     context = WorkflowContext(workflow_id, index)
     try:
         result = await definition.function(context, clone_json(workflow_input))
-    except _NewCommand as suspended:
-        return ReplayResult(ReplayStatus.COMMANDS, commands=(suspended.command,))
+    except _NewCommands as suspended:
+        return ReplayResult(ReplayStatus.COMMANDS, commands=suspended.commands)
     except _Blocked:
         return ReplayResult(ReplayStatus.BLOCKED)
     except NonDeterminismError:

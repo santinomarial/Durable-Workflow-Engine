@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID, uuid5
 
@@ -42,13 +44,32 @@ class _ReplaySuspended(BaseException):
     pass
 
 
-class _NewCommand(_ReplaySuspended):
-    def __init__(self, command: Command) -> None:
-        self.command = command
+class _NewCommands(_ReplaySuspended):
+    def __init__(self, commands: tuple[Command, ...]) -> None:
+        self.commands = commands
 
 
 class _Blocked(_ReplaySuspended):
     pass
+
+
+@dataclass(slots=True)
+class ActivityCall:
+    context: WorkflowContext
+    definition: ActivityDefinition
+    args: tuple[JSONValue, ...]
+    kwargs: dict[str, JSONValue]
+    retry: RetryPolicy | None
+    schedule_to_start: timedelta | None
+    start_to_close: timedelta | None
+    heartbeat_timeout: timedelta | None
+    command_id: int | None = None
+
+    def __await__(self) -> Generator[object, None, JSONValue]:
+        async def resolve() -> JSONValue:
+            return self.context._evaluate_activity(self)
+
+        return resolve().__await__()
 
 
 class WorkflowContext:
@@ -62,7 +83,7 @@ class WorkflowContext:
     def next_command_id(self) -> int:
         return self._next_command_id
 
-    async def activity(
+    def activity(
         self,
         definition: ActivityDefinition,
         *args: JSONValue,
@@ -71,22 +92,38 @@ class WorkflowContext:
         start_to_close: timedelta | None = None,
         heartbeat_timeout: timedelta | None = None,
         **kwargs: JSONValue,
-    ) -> JSONValue:
-        command_id = self._next_command_id
-        self._next_command_id += 1
-        policy = retry or RetryPolicy()
+    ) -> ActivityCall:
+        return ActivityCall(
+            context=self,
+            definition=definition,
+            args=args,
+            kwargs=kwargs,
+            retry=retry,
+            schedule_to_start=schedule_to_start,
+            start_to_close=start_to_close,
+            heartbeat_timeout=heartbeat_timeout,
+        )
+
+    def _evaluate_activity(self, call: ActivityCall) -> JSONValue:
+        if call.context is not self:
+            raise ValueError("activity call belongs to a different workflow context")
+        if call.command_id is None:
+            call.command_id = self._next_command_id
+            self._next_command_id += 1
+        command_id = call.command_id
+        policy = call.retry or RetryPolicy()
         command_input: dict[str, JSONValue] = {
-            "args": clone_json(list(args)),
-            "kwargs": clone_json(kwargs),
+            "args": clone_json(list(call.args)),
+            "kwargs": clone_json(call.kwargs),
         }
         schedule_to_start_seconds = (
-            schedule_to_start.total_seconds() if schedule_to_start is not None else None
+            call.schedule_to_start.total_seconds() if call.schedule_to_start is not None else None
         )
         start_to_close_seconds = (
-            start_to_close.total_seconds() if start_to_close is not None else None
+            call.start_to_close.total_seconds() if call.start_to_close is not None else None
         )
         heartbeat_timeout_seconds = (
-            heartbeat_timeout.total_seconds() if heartbeat_timeout is not None else None
+            call.heartbeat_timeout.total_seconds() if call.heartbeat_timeout is not None else None
         )
         for option_name, seconds in (
             ("schedule_to_start", schedule_to_start_seconds),
@@ -97,7 +134,7 @@ class WorkflowContext:
                 raise ValueError(f"{option_name} must be positive")
         identity: dict[str, JSONValue] = {
             "command_type": "activity",
-            "activity_type": definition.name,
+            "activity_type": call.definition.name,
             "input": command_input,
             "retry_policy": policy.to_json(),
             "schedule_to_start_seconds": schedule_to_start_seconds,
@@ -108,17 +145,19 @@ class WorkflowContext:
         scheduled = self._history.scheduled.get(command_id)
         if scheduled is None:
             entity_id = uuid5(ENTITY_NAMESPACE, f"{self._workflow_id}:activity:{command_id}")
-            raise _NewCommand(
-                ScheduleActivity(
-                    command_id=command_id,
-                    entity_id=entity_id,
-                    activity_type=definition.name,
-                    input=command_input,
-                    retry_policy=policy.to_json(),
-                    schedule_to_start_seconds=schedule_to_start_seconds,
-                    start_to_close_seconds=start_to_close_seconds,
-                    heartbeat_timeout_seconds=heartbeat_timeout_seconds,
-                    fingerprint=command_fingerprint,
+            raise _NewCommands(
+                (
+                    ScheduleActivity(
+                        command_id=command_id,
+                        entity_id=entity_id,
+                        activity_type=call.definition.name,
+                        input=command_input,
+                        retry_policy=policy.to_json(),
+                        schedule_to_start_seconds=schedule_to_start_seconds,
+                        start_to_close_seconds=start_to_close_seconds,
+                        heartbeat_timeout_seconds=heartbeat_timeout_seconds,
+                        fingerprint=command_fingerprint,
+                    ),
                 )
             )
         if scheduled.event_type != "ActivityScheduled":
@@ -139,7 +178,29 @@ class WorkflowContext:
             raise _Blocked
         if terminal.event_type == "ActivityCompleted":
             return clone_json(terminal.attributes.get("result"))
-        raise ActivityError(definition.name, clone_json(terminal.attributes.get("failure")))
+        raise ActivityError(call.definition.name, clone_json(terminal.attributes.get("failure")))
+
+    async def gather(self, *calls: ActivityCall) -> list[JSONValue]:
+        """Schedule child activities together and return results in source order."""
+        if not calls:
+            return []
+        results: list[JSONValue] = []
+        missing: list[Command] = []
+        blocked = False
+        for call in calls:
+            try:
+                results.append(self._evaluate_activity(call))
+            except _NewCommands as suspended:
+                missing.extend(suspended.commands)
+                results.append(None)
+            except _Blocked:
+                blocked = True
+                results.append(None)
+        if missing:
+            raise _NewCommands(tuple(missing))
+        if blocked:
+            raise _Blocked
+        return results
 
     async def sleep(self, duration: timedelta) -> None:
         command_id = self._next_command_id
@@ -151,14 +212,16 @@ class WorkflowContext:
         scheduled = self._history.scheduled.get(command_id)
         if scheduled is None:
             entity_id = uuid5(ENTITY_NAMESPACE, f"{self._workflow_id}:timer:{command_id}")
-            raise _NewCommand(
-                ScheduleTimer(
-                    command_id=command_id,
-                    entity_id=entity_id,
-                    delay_seconds=delay_seconds,
-                    purpose="sleep",
-                    signal_name=None,
-                    fingerprint=command_fingerprint,
+            raise _NewCommands(
+                (
+                    ScheduleTimer(
+                        command_id=command_id,
+                        entity_id=entity_id,
+                        delay_seconds=delay_seconds,
+                        purpose="sleep",
+                        signal_name=None,
+                        fingerprint=command_fingerprint,
+                    ),
                 )
             )
         if scheduled.event_type != "TimerStarted":
@@ -215,14 +278,16 @@ class WorkflowContext:
                 ENTITY_NAMESPACE,
                 f"{self._workflow_id}:signal-timeout:{command_id}",
             )
-            raise _NewCommand(
-                ScheduleTimer(
-                    command_id=command_id,
-                    entity_id=entity_id,
-                    delay_seconds=delay_seconds,
-                    purpose="signal_timeout",
-                    signal_name=name,
-                    fingerprint=command_fingerprint,
+            raise _NewCommands(
+                (
+                    ScheduleTimer(
+                        command_id=command_id,
+                        entity_id=entity_id,
+                        delay_seconds=delay_seconds,
+                        purpose="signal_timeout",
+                        signal_name=name,
+                        fingerprint=command_fingerprint,
+                    ),
                 )
             )
         if scheduled.event_type != "TimerStarted":

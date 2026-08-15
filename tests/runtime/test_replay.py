@@ -285,6 +285,53 @@ async def test_signal_waits_consume_matching_events_once_in_history_order() -> N
     assert replay.result == [1, 2]
 
 
+@workflow(version=1)
+async def gather_workflow(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    del value
+    return await ctx.gather(
+        ctx.activity(uppercase, "first"),
+        ctx.activity(uppercase, "second"),
+    )
+
+
+async def test_gather_schedules_all_children_and_joins_in_source_order() -> None:
+    initial = await replay_workflow(
+        gather_workflow,
+        workflow_id=WORKFLOW_ID,
+        workflow_input=None,
+        history=(started(),),
+    )
+    assert initial.status is ReplayStatus.COMMANDS
+    assert [command.command_id for command in initial.commands] == [0, 1]
+    assert all(isinstance(command, ScheduleActivity) for command in initial.commands)
+    first, second = initial.commands
+    assert isinstance(first, ScheduleActivity)
+    assert isinstance(second, ScheduleActivity)
+
+    schedules = (scheduled(2, first), scheduled(3, second))
+    blocked = await replay_workflow(
+        gather_workflow,
+        workflow_id=WORKFLOW_ID,
+        workflow_input=None,
+        history=(started(), *schedules),
+    )
+    assert blocked.status is ReplayStatus.BLOCKED
+
+    joined = await replay_workflow(
+        gather_workflow,
+        workflow_id=WORKFLOW_ID,
+        workflow_input=None,
+        history=(
+            started(),
+            *schedules,
+            completed(4, second, "SECOND"),
+            completed(5, first, "FIRST"),
+        ),
+    )
+    assert joined.status is ReplayStatus.COMPLETED
+    assert joined.result == ["FIRST", "SECOND"]
+
+
 async def test_replay_rejects_unvisited_historical_command() -> None:
     first = await replay_workflow(
         sequential_workflow,
