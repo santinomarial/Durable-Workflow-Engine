@@ -100,6 +100,43 @@ async def heartbeat_activity(
     return cast(datetime, expires_at)
 
 
+async def reclaim_expired_workflow_tasks(pool: Pool, *, limit: int = 100) -> int:
+    """Return expired workflow tasks to pending without emitting history events."""
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    async with pool.acquire() as connection, connection.transaction():
+        reclaimed = await connection.fetch(
+            """
+            with expired as (
+              select t.id
+              from tasks t
+              join workflow_executions e on e.id = t.workflow_id
+              where t.task_type = 'workflow'
+                and t.status = 'leased'
+                and t.lease_expires_at <= now()
+                and e.status = 'running'
+              order by t.lease_expires_at, t.id
+              for update of t skip locked
+              limit $1
+            )
+            update tasks t
+            set status = 'pending',
+                visible_at = now(),
+                leased_at = null,
+                lease_token = null,
+                lease_expires_at = null,
+                start_to_close_deadline = null,
+                heartbeat_at = null,
+                heartbeat_details = null
+            from expired
+            where t.id = expired.id
+            returning t.id
+            """,
+            limit,
+        )
+    return len(reclaimed)
+
+
 def _decode_json(value: object) -> JSONValue:
     if value is None:
         return None

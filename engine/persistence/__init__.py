@@ -6,6 +6,7 @@ from engine.persistence.leasing import (
     StaleLeaseError,
     heartbeat_activity,
     lease_task,
+    reclaim_expired_workflow_tasks,
     renew_lease,
 )
 from engine.persistence.transitions import (
@@ -30,6 +31,7 @@ __all__ = [
     "heartbeat_activity",
     "lease_task",
     "load_workflow_replay_state",
+    "reclaim_expired_workflow_tasks",
     "register_workflow_definition",
     "renew_lease",
     "start_workflow",

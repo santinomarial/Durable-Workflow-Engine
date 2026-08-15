@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from datetime import timedelta
@@ -10,6 +11,8 @@ from engine.persistence import (
     create_pool,
     heartbeat_activity,
     lease_task,
+    load_workflow_replay_state,
+    reclaim_expired_workflow_tasks,
     register_workflow_definition,
     renew_lease,
     start_workflow,
@@ -199,5 +202,69 @@ async def test_activity_lease_appends_started_event_in_same_transition() -> None
                 lease_token=leased.lease_token,
                 details={"too_late": True},
             )
+    finally:
+        await pool.close()
+
+
+async def test_expired_workflow_lease_is_reclaimed_with_a_new_token() -> None:
+    assert DATABASE_URL is not None
+    await migrate(DATABASE_URL)
+    pool = await create_pool(DATABASE_URL)
+    try:
+        await register_workflow_definition(pool, lease_workflow)
+        await start_workflow(
+            pool,
+            workflow_type=lease_workflow.name,
+            definition_version=1,
+            workflow_input=None,
+            queue_name="reclaim-workflow-queue",
+        )
+        original = await lease_task(pool, task_type="workflow", queue_name="reclaim-workflow-queue")
+        assert original is not None
+        async with pool.acquire() as connection:
+            await connection.execute(
+                "update tasks set lease_expires_at = now() - interval '1 second' where id = $1",
+                original.id,
+            )
+
+        assert await reclaim_expired_workflow_tasks(pool) == 1
+        replacement = await lease_task(
+            pool, task_type="workflow", queue_name="reclaim-workflow-queue"
+        )
+        assert replacement is not None
+        assert replacement.id == original.id
+        assert replacement.lease_token != original.lease_token
+        with pytest.raises(StaleLeaseError, match="does not hold the current lease"):
+            await load_workflow_replay_state(pool, original)
+    finally:
+        await pool.close()
+
+
+async def test_concurrent_pollers_claim_distinct_workflow_tasks() -> None:
+    assert DATABASE_URL is not None
+    await migrate(DATABASE_URL)
+    pool = await create_pool(DATABASE_URL, max_size=20)
+    try:
+        await register_workflow_definition(pool, lease_workflow)
+        for index in range(12):
+            await start_workflow(
+                pool,
+                workflow_type=lease_workflow.name,
+                definition_version=1,
+                workflow_input=index,
+                queue_name="concurrent-lease-queue",
+            )
+
+        leases = await asyncio.gather(
+            *(
+                lease_task(pool, task_type="workflow", queue_name="concurrent-lease-queue")
+                for _ in range(12)
+            )
+        )
+        assert all(task is not None for task in leases)
+        task_ids = {task.id for task in leases if task is not None}
+        lease_tokens = {task.lease_token for task in leases if task is not None}
+        assert len(task_ids) == 12
+        assert len(lease_tokens) == 12
     finally:
         await pool.close()
