@@ -114,3 +114,71 @@ async def test_failed_attempts_retry_with_same_entity_then_complete() -> None:
         ]
     finally:
         await pool.close()
+
+
+@activity(name="always-fails")
+async def always_fails(value: JSONValue) -> JSONValue:
+    raise ValueError(f"rejected {value}")
+
+
+@workflow(version=1, name="final-failure-e2e")
+async def final_failure_workflow(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    return await ctx.activity(
+        always_fails,
+        value,
+        retry=RetryPolicy(max_attempts=2, initial_interval=timedelta(0)),
+    )
+
+
+async def test_final_attempt_wakes_and_fails_workflow_with_dead_task() -> None:
+    assert DATABASE_URL is not None
+    await migrate(DATABASE_URL)
+    pool = await create_pool(DATABASE_URL)
+    registry = DefinitionRegistry()
+    registry.register_workflow(final_failure_workflow)
+    registry.register_activity(always_fails)
+    try:
+        await register_workflow_definition(pool, final_failure_workflow)
+        started = await start_workflow(
+            pool,
+            workflow_type=final_failure_workflow.name,
+            definition_version=1,
+            workflow_input="payload",
+            queue_name="final-failure-e2e-queue",
+        )
+        assert await run_workflow_task(pool, registry, queue_name="final-failure-e2e-queue")
+        assert await run_activity_task(pool, registry, queue_name="final-failure-e2e-queue")
+        assert await run_activity_task(pool, registry, queue_name="final-failure-e2e-queue")
+        assert await run_workflow_task(pool, registry, queue_name="final-failure-e2e-queue")
+        assert not await run_activity_task(pool, registry, queue_name="final-failure-e2e-queue")
+
+        async with pool.acquire() as connection:
+            execution = await connection.fetchrow(
+                "select status, failure from workflow_executions where id = $1",
+                started.workflow_id,
+            )
+            failures = await connection.fetch(
+                """
+                select attributes from history_events
+                where workflow_id = $1 and event_type = 'ActivityFailed' order by seq
+                """,
+                started.workflow_id,
+            )
+            attempts_rows = await connection.fetch(
+                """
+                select attempt, status from tasks
+                where workflow_id = $1 and task_type = 'activity' order by attempt
+                """,
+                started.workflow_id,
+            )
+        assert execution is not None
+        assert execution["status"] == "failed"
+        workflow_failure = json.loads(execution["failure"])
+        assert workflow_failure["type"] == "ActivityError"
+        assert [json.loads(row["attributes"])["final"] for row in failures] == [False, True]
+        assert [(row["attempt"], row["status"]) for row in attempts_rows] == [
+            (1, "completed"),
+            (2, "dead"),
+        ]
+    finally:
+        await pool.close()
