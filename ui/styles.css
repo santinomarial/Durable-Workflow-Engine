@@ -466,6 +466,36 @@ kbd { display: inline-grid; min-width: 21px; min-height: 20px; margin: 0 2px; pl
 .raw-actions { display: flex; gap: 8px; }
 .raw-json { max-height: 560px; margin: 0; padding: 18px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text-soft); font-family: var(--mono); font-size: 10px; line-height: 1.65; tab-size: 2; }
 
+.debug-position { color: var(--text-muted); font-family: var(--mono); font-size: 9px; }
+.debug-controls { display: grid; grid-template-columns: auto auto auto minmax(140px, 1fr); gap: 8px; align-items: center; margin-bottom: 14px; }
+.debug-controls .button { min-width: 42px; padding-inline: 11px; }
+.debug-controls input[type="range"] { width: 100%; accent-color: var(--accent); }
+.debug-frame { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; align-items: flex-start; min-height: 108px; padding: 17px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-raised); }
+.debug-frame h4 { margin: 3px 0 5px; font-size: 16px; }
+.debug-frame p:last-child { margin: 0; color: var(--text-muted); font-size: 10px; }
+.debug-category { padding: 5px 7px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.debug-category.external { background: color-mix(in srgb, var(--violet) 14%, var(--surface)); color: var(--violet); }
+.debug-category.terminal, .debug-category.outcome { background: color-mix(in srgb, var(--green) 14%, var(--surface)); color: var(--green); }
+.debug-state { display: grid; grid-template-columns: repeat(6, minmax(70px, 1fr)); margin: 13px 0 20px; border: 1px solid var(--line); border-radius: 7px; }
+.debug-state > div { display: grid; gap: 3px; padding: 10px; border-left: 1px solid var(--line); }
+.debug-state > div:first-child { border-left: 0; }
+.debug-state span { color: var(--text-muted); font-size: 8px; text-transform: uppercase; }
+.debug-state strong { font-family: var(--mono); font-size: 14px; }
+.debug-active-heading { display: flex; justify-content: space-between; margin-bottom: 8px; }
+.debug-active-heading h4 { font-size: 12px; }
+.debug-active-heading span { color: var(--text-muted); font-size: 9px; }
+.debug-active { display: grid; gap: 7px; }
+.debug-entity { display: grid; grid-template-columns: 54px minmax(0, 1fr) auto; gap: 11px; align-items: center; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; }
+.debug-entity strong, .debug-entity small { display: block; }
+.debug-entity strong { font-size: 10px; }
+.debug-entity small { margin-top: 2px; color: var(--text-muted); font-family: var(--mono); font-size: 8px; }
+.debug-entity-kind { color: var(--blue); font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.debug-compare-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr) auto; gap: 14px; align-items: end; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.debug-compare-form h4 { margin-bottom: 3px; font-size: 12px; }
+.debug-compare-form p { margin: 0; color: var(--text-muted); font-size: 9px; }
+.debug-comparison { margin-top: 10px; padding: 11px 13px; border-left: 3px solid var(--green); background: color-mix(in srgb, var(--green) 8%, var(--surface)); color: var(--text-soft); font-size: 10px; }
+.debug-comparison.is-divergent { border-color: var(--red); background: color-mix(in srgb, var(--red) 8%, var(--surface)); }
+
 .dialog {
   width: min(620px, calc(100vw - 28px));
   max-height: calc(100vh - 34px);
@@ -558,6 +588,9 @@ kbd { display: inline-grid; min-width: 21px; min-height: 20px; margin: 0 2px; pl
   .graph-node { grid-template-columns: 38px minmax(0, 1fr); }
   .graph-node > time { display: none; }
   .content-heading { flex-direction: column; }
+  .debug-state { grid-template-columns: repeat(3, 1fr); }
+  .debug-state > div:nth-child(4) { border-left: 0; }
+  .debug-compare-form { grid-template-columns: 1fr; }
   .graph-legend { flex-wrap: wrap; }
   .form-grid { grid-template-columns: 1fr; }
   .field-wide { grid-column: auto; }

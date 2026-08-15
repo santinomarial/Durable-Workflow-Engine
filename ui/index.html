@@ -185,6 +185,7 @@
               <button id="tab-overview" class="tab is-active" type="button" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview">Overview</button>
               <button id="tab-history" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-history" data-tab="history">History <span id="history-count" class="tab-count"></span></button>
               <button id="tab-graph" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-graph" data-tab="graph">Graph</button>
+              <button id="tab-debugger" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-debugger" data-tab="debugger">Debugger</button>
               <button id="tab-raw" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-raw" data-tab="raw">Raw</button>
             </nav>
 
@@ -242,6 +243,30 @@
                 </div>
               </div>
               <div id="graph" class="graph" role="list"></div>
+            </div>
+
+            <div id="panel-debugger" class="tab-panel" role="tabpanel" aria-labelledby="tab-debugger" hidden>
+              <div class="content-heading">
+                <div><h3>Replay timeline</h3><p>Step through durable state without executing workflow code.</p></div>
+                <span id="debug-position" class="debug-position">No frames</span>
+              </div>
+              <div class="debug-controls">
+                <button id="debug-previous" class="button button-secondary" type="button" aria-label="Previous replay frame">←</button>
+                <button id="debug-play" class="button button-primary" type="button">Play</button>
+                <button id="debug-next" class="button button-secondary" type="button" aria-label="Next replay frame">→</button>
+                <label for="debug-slider" class="sr-only">Replay frame</label>
+                <input id="debug-slider" type="range" min="0" max="0" value="0">
+              </div>
+              <article id="debug-frame" class="debug-frame"></article>
+              <div id="debug-state" class="debug-state" aria-label="Replay state counters"></div>
+              <div class="debug-active-heading"><h4>Active durable entities</h4><span id="debug-active-count"></span></div>
+              <div id="debug-active" class="debug-active"></div>
+              <form id="debug-compare-form" class="debug-compare-form">
+                <div><h4>Compare command traces</h4><p>Find the first type, ordinal, or fingerprint divergence from another run.</p></div>
+                <label class="field"><span>Other workflow ID</span><input id="debug-compare-id" required autocomplete="off" placeholder="UUID"></label>
+                <button class="button button-secondary" type="submit">Compare</button>
+              </form>
+              <div id="debug-comparison" class="debug-comparison" hidden></div>
             </div>
 
             <div id="panel-raw" class="tab-panel" role="tabpanel" aria-labelledby="tab-raw" hidden>

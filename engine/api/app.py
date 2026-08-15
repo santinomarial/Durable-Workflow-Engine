@@ -66,6 +66,8 @@ from engine.persistence import (
 )
 from engine.persistence.migrations import discover_migrations, migrate
 from engine.persistence.transitions import TransitionError
+from engine.runtime.history import HistoryEvent
+from engine.runtime.replay_debugger import build_replay_trace, compare_command_histories
 from engine.runtime.serialization import JSONValue
 
 _PACKAGED_UI_DIR = Path(__file__).resolve().parents[1] / "_assets" / "ui"
@@ -140,6 +142,20 @@ def _audit(request: Request, principal: Principal, action: str) -> AuditContext:
         actor_key_id=principal.key_id,
         actor_role=principal.role,
         action=action,
+    )
+
+
+def _debug_events(records: Any) -> tuple[HistoryEvent, ...]:
+    return tuple(
+        HistoryEvent(
+            seq=record.seq,
+            event_type=record.event_type,
+            attributes=cast(dict[str, JSONValue], record.attributes),
+            command_id=record.command_id,
+            entity_id=record.entity_id,
+            external_id=record.external_id,
+        )
+        for record in records
     )
 
 
@@ -530,6 +546,52 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
         if not records:
             raise HTTPException(status_code=404, detail="workflow not found")
         return jsonable_encoder([asdict(record) for record in records])
+
+    @application.get("/api/workflows/{workflow_id}/debug-trace")
+    async def debug_trace(
+        workflow_id: UUID,
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 1000,
+    ) -> Any:
+        require_role(request, "viewer")
+        if await get_execution(_pool(request), workflow_id) is None:
+            raise HTTPException(status_code=404, detail="workflow not found")
+        page = await get_history_page(_pool(request), workflow_id, limit=limit)
+        frames = build_replay_trace(_debug_events(page.items))
+        return jsonable_encoder(
+            {
+                "workflow_id": workflow_id,
+                "frames": [asdict(frame) for frame in frames],
+                "truncated": page.next_after_seq is not None,
+                "next_after_seq": page.next_after_seq,
+            }
+        )
+
+    @application.get("/api/workflows/{workflow_id}/debug-compare/{other_workflow_id}")
+    async def debug_compare(
+        workflow_id: UUID,
+        other_workflow_id: UUID,
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 1000,
+    ) -> Any:
+        require_role(request, "viewer")
+        left, right = await asyncio.gather(
+            get_history_page(_pool(request), workflow_id, limit=limit),
+            get_history_page(_pool(request), other_workflow_id, limit=limit),
+        )
+        if not left.items or not right.items:
+            raise HTTPException(status_code=404, detail="one or both workflows were not found")
+        comparison = compare_command_histories(
+            _debug_events(left.items), _debug_events(right.items)
+        )
+        return jsonable_encoder(
+            {
+                **asdict(comparison),
+                "left_workflow_id": workflow_id,
+                "right_workflow_id": other_workflow_id,
+                "truncated": left.next_after_seq is not None or right.next_after_seq is not None,
+            }
+        )
 
     @application.get("/api/workflows/{workflow_id}/history")
     async def history(

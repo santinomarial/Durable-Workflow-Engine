@@ -92,7 +92,9 @@ validated result-bearing workflow updates, typed Python handles and snapshot
 queries, and indexed JSON search attributes with server-side visibility
 filtering. Long-running workflows can atomically continue as new into another
 pinned version, preserving chain navigation while starting a bounded fresh
-history. OpenAPI documentation is at `/docs`; SDK examples are in the
+history. A replay debugger steps through causal state frame by frame and
+compares committed command fingerprints across runs. OpenAPI documentation is
+at `/docs`; SDK examples are in the
 [Python SDK guide](docs/sdk.md).
 Production authentication is fail closed and uses hashed bearer-key
 configuration with viewer, operator, and administrator roles. See the

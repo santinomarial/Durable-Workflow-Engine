@@ -216,6 +216,12 @@ async def test_api_controls_and_inspects_workflow() -> None:
                 "SignalReceived",
                 "WorkflowExecutionTerminated",
             ]
+            debug_trace = await client.get(f"/api/workflows/{workflow_id}/debug-trace")
+            assert debug_trace.json()["frames"][-1]["snapshot"]["terminal_status"] == ("terminated")
+            debug_compare = await client.get(
+                f"/api/workflows/{workflow_id}/debug-compare/{workflow_id}"
+            )
+            assert debug_compare.json()["compatible"] is True
             first_history_page = await client.get(
                 f"/api/workflows/{workflow_id}/history", params={"limit": 1}
             )

@@ -3,7 +3,7 @@
 const POLL_INTERVAL_MS = 5000;
 const TERMINAL_STATUSES = new Set(["completed", "failed", "terminated"]);
 const VALID_STATUSES = new Set(["", "running", "completed", "failed", "terminated", "attention"]);
-const VALID_TABS = new Set(["overview", "history", "graph", "raw"]);
+const VALID_TABS = new Set(["overview", "history", "graph", "debugger", "raw"]);
 
 const state = {
   executions: [],
@@ -13,6 +13,9 @@ const state = {
   history: [],
   updates: [],
   continuationChain: [],
+  debugTrace: null,
+  debugIndex: 0,
+  debugTimer: null,
   historyTruncated: false,
   statusFilter: "",
   search: "",
@@ -593,6 +596,103 @@ function renderGraph(history) {
   }
 }
 
+function renderDebugFrame() {
+  const frames = state.debugTrace?.frames || [];
+  if (!frames.length) {
+    $("debug-position").textContent = "No frames";
+    $("debug-frame").replaceChildren(element("p", { text: "No committed history is available." }));
+    $("debug-state").replaceChildren();
+    $("debug-active").replaceChildren();
+    return;
+  }
+  state.debugIndex = Math.max(0, Math.min(state.debugIndex, frames.length - 1));
+  const frame = frames[state.debugIndex];
+  $("debug-position").textContent = `Frame ${state.debugIndex + 1} / ${frames.length} · sequence ${frame.seq}${state.debugTrace.truncated ? " · prefix only" : ""}`;
+  $("debug-slider").max = String(frames.length - 1);
+  $("debug-slider").value = String(state.debugIndex);
+  $("debug-previous").disabled = state.debugIndex === 0;
+  $("debug-next").disabled = state.debugIndex === frames.length - 1;
+  $("debug-frame").replaceChildren(
+    element("span", { className: `debug-category ${frame.category}`, text: frame.category }),
+    element("div", {}, [
+      element("p", { className: "eyebrow", text: `Sequence ${frame.seq} · ${humanize(frame.event_type)}` }),
+      element("h4", { text: frame.summary }),
+      element("p", { text: frame.caused_by_seq ? `Resolves the command recorded at sequence ${frame.caused_by_seq}.` : frame.command_id !== null ? `Deterministic command ordinal ${frame.command_id}.` : "Committed replay checkpoint." }),
+    ]),
+  );
+  const snapshot = frame.snapshot;
+  const counters = [
+    ["Commands", snapshot.commands], ["Waiting", snapshot.waiting_entities],
+    ["Succeeded", snapshot.succeeded_entities], ["Failed", snapshot.failed_entities],
+    ["Signals", snapshot.signals_received], ["Updates pending", snapshot.pending_updates],
+  ];
+  $("debug-state").replaceChildren(...counters.map(([label, value]) => element("div", {}, [
+    element("span", { text: label }), element("strong", { text: value }),
+  ])));
+  $("debug-active-count").textContent = `${snapshot.waiting_entities} waiting`;
+  $("debug-active").replaceChildren(...snapshot.active_entities.map((entity) => element("div", { className: "debug-entity" }, [
+    element("span", { className: `debug-entity-kind ${entity.kind}`, text: entity.kind }),
+    element("div", {}, [element("strong", { text: entity.label }), element("small", { text: `${shortId(entity.entity_id)} · from sequence ${entity.scheduled_seq}` })]),
+    element("span", { className: "status-badge running", text: entity.status }),
+  ])));
+  if (!snapshot.active_entities.length) $("debug-active").append(element("p", { className: "inline-empty", text: snapshot.terminal_status ? `Replay reached ${snapshot.terminal_status}.` : "No activity, timer, or child is waiting at this frame." }));
+}
+
+function stopDebugPlayback() {
+  if (state.debugTimer) clearInterval(state.debugTimer);
+  state.debugTimer = null;
+  $("debug-play").textContent = "Play";
+}
+
+function toggleDebugPlayback() {
+  if (state.debugTimer) { stopDebugPlayback(); return; }
+  const frames = state.debugTrace?.frames || [];
+  if (frames.length < 2) return;
+  if (state.debugIndex >= frames.length - 1) state.debugIndex = 0;
+  $("debug-play").textContent = "Pause";
+  state.debugTimer = setInterval(() => {
+    state.debugIndex += 1;
+    renderDebugFrame();
+    if (state.debugIndex >= frames.length - 1) stopDebugPlayback();
+  }, 650);
+}
+
+async function compareDebugTrace(event) {
+  event.preventDefault();
+  const otherId = $("debug-compare-id").value.trim();
+  if (!otherId || !state.selected) return;
+  const output = $("debug-comparison");
+  output.hidden = false;
+  output.textContent = "Comparing committed command streams…";
+  try {
+    const comparison = await api(`/api/workflows/${encodeURIComponent(state.selected)}/debug-compare/${encodeURIComponent(otherId)}`);
+    if (comparison.compatible) {
+      output.className = "debug-comparison is-compatible";
+      output.textContent = `Compatible through ${comparison.matched_commands} committed commands${comparison.truncated ? " in the inspected prefix" : ""}.`;
+    } else {
+      const divergence = comparison.divergence;
+      output.className = "debug-comparison is-divergent";
+      output.textContent = `First divergence at command ${divergence.command_index}: ${divergence.reason}. This run: ${divergence.left_event_type || "ended"} at #${divergence.left_seq ?? "—"}; other: ${divergence.right_event_type || "ended"} at #${divergence.right_seq ?? "—"}.`;
+    }
+  } catch (error) {
+    output.className = "debug-comparison is-divergent";
+    output.textContent = error.message;
+  }
+}
+
+async function loadDebugTrace(quiet = false) {
+  const workflowId = state.selected;
+  if (!workflowId) return;
+  const trace = await api(`/api/workflows/${encodeURIComponent(workflowId)}/debug-trace`, { quiet });
+  if (state.selected !== workflowId) return;
+  const wasEmpty = state.debugTrace === null;
+  state.debugTrace = trace;
+  state.debugIndex = wasEmpty
+    ? Math.max(0, trace.frames.length - 1)
+    : Math.min(state.debugIndex, Math.max(0, trace.frames.length - 1));
+  renderDebugFrame();
+}
+
 function rawSnapshot() {
   return JSON.stringify({
     execution: state.execution,
@@ -648,6 +748,7 @@ function renderDetail(execution, history) {
   renderEventFilters(history);
   renderHistory();
   renderGraph(history);
+  renderDebugFrame();
   $("raw-json").textContent = rawSnapshot();
   setActiveTab(state.activeTab, false);
 }
@@ -673,6 +774,9 @@ async function selectExecution(id, options = {}) {
   const changed = id !== state.selected;
   state.selected = id;
   if (changed) {
+    stopDebugPlayback();
+    state.debugTrace = null;
+    state.debugIndex = 0;
     state.eventFilter = "";
     state.historySearch = "";
     $("history-search").value = "";
@@ -695,6 +799,7 @@ async function selectExecution(id, options = {}) {
     state.continuationChain = continuationChain;
     state.historyTruncated = history.truncated;
     renderDetail(execution, history.items);
+    if (state.activeTab === "debugger") await loadDebugTrace(quiet);
   } catch (error) {
     if (generation !== state.detailGeneration) return;
     showDetailError(error);
@@ -1347,19 +1452,28 @@ function bindEvents() {
     });
   });
   document.querySelectorAll(".tab").forEach((tab) => {
-    tab.addEventListener("click", () => setActiveTab(tab.dataset.tab));
-    tab.addEventListener("keydown", (event) => {
+    tab.addEventListener("click", async () => {
+      setActiveTab(tab.dataset.tab);
+      if (tab.dataset.tab === "debugger") await loadDebugTrace();
+    });
+    tab.addEventListener("keydown", async (event) => {
       if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
       event.preventDefault();
       const tabs = [...document.querySelectorAll(".tab")];
       const index = tabs.indexOf(tab);
       const next = tabs[(index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
       setActiveTab(next.dataset.tab);
+      if (next.dataset.tab === "debugger") await loadDebugTrace();
       next.focus();
     });
   });
   $("history-search").addEventListener("input", (event) => { state.historySearch = event.target.value; renderHistory(); });
   $("event-filter").addEventListener("change", (event) => { state.eventFilter = event.target.value; renderHistory(); });
+  $("debug-previous").addEventListener("click", () => { stopDebugPlayback(); state.debugIndex -= 1; renderDebugFrame(); });
+  $("debug-next").addEventListener("click", () => { stopDebugPlayback(); state.debugIndex += 1; renderDebugFrame(); });
+  $("debug-play").addEventListener("click", toggleDebugPlayback);
+  $("debug-slider").addEventListener("input", (event) => { stopDebugPlayback(); state.debugIndex = Number(event.target.value); renderDebugFrame(); });
+  $("debug-compare-form").addEventListener("submit", compareDebugTrace);
   $("retry-detail").addEventListener("click", () => state.selected && selectExecution(state.selected));
   $("copy-workflow-id").addEventListener("click", async () => {
     try { await copyText(state.selected); toast("Workflow ID copied", state.selected); }

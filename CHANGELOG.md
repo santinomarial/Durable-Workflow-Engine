@@ -21,6 +21,7 @@ migration compatibility remain explicit release requirements.
 - Replay-native child workflows with atomic start, result propagation, and recursive parent-close policy.
 - Deduplicated result-bearing workflow updates, typed handles, and snapshot query projections.
 - Atomic continue-as-new with version handoff, inherited visibility metadata, and complete chain inspection.
+- Interactive replay timeline with causal state frames and first-divergence command-trace comparison.
 
 ## [0.1.0] - 2026-08-15
 
