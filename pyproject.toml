@@ -34,7 +34,10 @@ packages = ["engine"]
 addopts = "--strict-config --strict-markers"
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = ["integration: tests requiring a PostgreSQL instance"]
+markers = [
+  "chaos: failure-injection correctness tests",
+  "integration: tests requiring a PostgreSQL instance",
+]
 
 [tool.ruff]
 line-length = 100
