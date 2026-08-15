@@ -39,6 +39,7 @@ from engine.persistence import (
     backfill_schedule,
     create_configured_pool,
     create_schedule,
+    get_continuation_chain,
     get_execution,
     get_execution_stats,
     get_history_page,
@@ -521,6 +522,14 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
         if record is None:
             raise HTTPException(status_code=404, detail="workflow not found")
         return jsonable_encoder(asdict(record))
+
+    @application.get("/api/workflows/{workflow_id}/continuation-chain")
+    async def continuation_chain(workflow_id: UUID, request: Request) -> Any:
+        require_role(request, "viewer")
+        records = await get_continuation_chain(_pool(request), workflow_id)
+        if not records:
+            raise HTTPException(status_code=404, detail="workflow not found")
+        return jsonable_encoder([asdict(record) for record in records])
 
     @application.get("/api/workflows/{workflow_id}/history")
     async def history(

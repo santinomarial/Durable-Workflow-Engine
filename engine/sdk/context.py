@@ -10,6 +10,7 @@ from uuid import UUID, uuid5
 
 from engine.runtime.commands import (
     Command,
+    ContinueAsNew,
     RecordMarker,
     ResolveWorkflowUpdate,
     ScheduleActivity,
@@ -73,6 +74,11 @@ class _NewCommands(_ReplaySuspended):
 
 class _Blocked(_ReplaySuspended):
     pass
+
+
+class _ContinueAsNewRecorded(_ReplaySuspended):
+    def __init__(self, workflow_id: UUID) -> None:
+        self.workflow_id = workflow_id
 
 
 @dataclass(slots=True)
@@ -167,6 +173,56 @@ class WorkflowContext:
             queue_name=queue_name,
             parent_close_policy=parent_close_policy,
         )
+
+    def continue_as_new(
+        self,
+        definition: WorkflowDefinition,
+        input: JSONValue = None,
+        *,
+        queue_name: str | None = None,
+    ) -> None:
+        """Close this run and atomically create a fresh linked execution."""
+        if queue_name == "":
+            raise ValueError("continuation queue_name cannot be empty")
+        command_id = self._next_command_id
+        self._next_command_id += 1
+        detached_input = clone_json(input)
+        identity: dict[str, JSONValue] = {
+            "command_type": "continue_as_new",
+            "workflow_type": definition.name,
+            "definition_version": definition.version,
+            "input": detached_input,
+            "queue_name": queue_name,
+        }
+        command_fingerprint = fingerprint(identity)
+        recorded = self._history.scheduled.get(command_id)
+        if recorded is None:
+            new_workflow_id = uuid5(
+                ENTITY_NAMESPACE, f"{self._workflow_id}:continue-as-new:{command_id}"
+            )
+            raise _NewCommands(
+                (
+                    ContinueAsNew(
+                        command_id=command_id,
+                        new_workflow_id=new_workflow_id,
+                        workflow_type=definition.name,
+                        definition_version=definition.version,
+                        input=detached_input,
+                        queue_name=queue_name,
+                        fingerprint=command_fingerprint,
+                    ),
+                )
+            )
+        if recorded.event_type != "WorkflowExecutionContinuedAsNew":
+            raise NonDeterminismError(
+                command_id,
+                f"expected continue-as-new, history contains {recorded.event_type}",
+            )
+        if recorded.attributes.get("fingerprint") != command_fingerprint:
+            raise NonDeterminismError(command_id, "continue-as-new command changed")
+        if recorded.entity_id is None:
+            raise NonDeterminismError(command_id, "continuation has no execution identity")
+        raise _ContinueAsNewRecorded(recorded.entity_id)
 
     def _evaluate_child_workflow(self, call: ChildWorkflowCall) -> JSONValue:
         if call.context is not self:

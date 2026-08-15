@@ -48,7 +48,7 @@ async def test_api_controls_and_inspects_workflow() -> None:
             health = await client.get("/api/health")
             assert health.json()["status"] == "ready"
             assert health.json()["database"] == "ok"
-            assert health.json()["schema_version"] == "0014"
+            assert health.json()["schema_version"] == "0015"
             assert health.headers["cache-control"] == "no-store"
             assert health.headers["x-content-type-options"] == "nosniff"
             assert health.headers["x-frame-options"] == "DENY"
@@ -152,6 +152,10 @@ async def test_api_controls_and_inspects_workflow() -> None:
             detail = await client.get(f"/api/workflows/{workflow_id}")
             assert detail.json()["input"] == {"request": 42}
             assert detail.json()["search_attributes"]["customer_id"] == "customer-42"
+            continuation_chain = await client.get(
+                f"/api/workflows/{workflow_id}/continuation-chain"
+            )
+            assert [item["id"] for item in continuation_chain.json()] == [workflow_id]
             attribute_listing = await client.get(
                 "/api/workflows",
                 params={"attributes": json.dumps({"priority": 9})},

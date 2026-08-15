@@ -14,6 +14,7 @@ SCHEDULE_EVENT_TYPES = frozenset(
         "MarkerRecorded",
         "ChildWorkflowStarted",
         "WorkflowUpdateResolved",
+        "WorkflowExecutionContinuedAsNew",
     }
 )
 ACTIVITY_TERMINAL_EVENT_TYPES = frozenset(
@@ -86,6 +87,7 @@ class HistoryIndex:
                         "ActivityScheduled",
                         "TimerStarted",
                         "ChildWorkflowStarted",
+                        "WorkflowExecutionContinuedAsNew",
                     }
                     and event.entity_id is None
                 ):

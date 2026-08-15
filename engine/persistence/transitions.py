@@ -17,6 +17,7 @@ from engine.persistence.audit import AuditContext, record_api_audit
 from engine.persistence.database import Connection, Pool
 from engine.persistence.leasing import LeasedTask, StaleLeaseError
 from engine.runtime.commands import (
+    ContinueAsNew,
     RecordMarker,
     ResolveWorkflowUpdate,
     ScheduleActivity,
@@ -1080,6 +1081,151 @@ async def _terminate_descendants(connection: Connection, *, parent_workflow_id: 
         )
 
 
+async def _commit_continue_as_new(
+    connection: Connection,
+    *,
+    workflow_id: UUID,
+    current_task_id: UUID,
+    seq: int,
+    command: ContinueAsNew,
+) -> None:
+    current = await connection.fetchrow(
+        """
+        select workflow_type, queue_name, search_attributes, schedule_id, scheduled_at,
+               parent_workflow_id
+        from workflow_executions where id = $1
+        """,
+        workflow_id,
+    )
+    if current is None:
+        raise TransitionError(f"workflow {workflow_id} does not exist")
+    if current["workflow_type"] != command.workflow_type:
+        raise TransitionError("continue-as-new must retain the workflow type")
+    if current["parent_workflow_id"] is not None:
+        raise TransitionError("continue-as-new is not supported inside child workflows")
+    definition_exists = await connection.fetchval(
+        """
+        select exists (
+          select 1 from workflow_definitions
+          where workflow_type = $1 and version = $2
+        )
+        """,
+        command.workflow_type,
+        command.definition_version,
+    )
+    if definition_exists is not True:
+        raise DefinitionNotRegisteredError(
+            f"continuation workflow {command.workflow_type!r} version "
+            f"{command.definition_version} is not registered"
+        )
+    attributes = _decode_json(current["search_attributes"])
+    if not isinstance(attributes, dict):
+        raise TypeError("stored search attributes must be a JSON object")
+    continuation_attributes = {
+        **attributes,
+        "dwe.continued_from": str(workflow_id),
+    }
+    queue_name = command.queue_name or cast(str, current["queue_name"])
+    started_at = datetime.now(UTC)
+    result: dict[str, JSONValue] = {"continued_to": str(command.new_workflow_id)}
+    await connection.execute(
+        """
+        insert into history_events (
+          workflow_id, seq, event_type, command_id, entity_id, attributes
+        ) values ($1, $2, 'WorkflowExecutionContinuedAsNew', $3, $4, $5::jsonb)
+        """,
+        workflow_id,
+        seq,
+        command.command_id,
+        command.new_workflow_id,
+        canonical_json(
+            {
+                "workflow_type": command.workflow_type,
+                "definition_version": command.definition_version,
+                "input": command.input,
+                "queue_name": queue_name,
+                "fingerprint": command.fingerprint,
+            }
+        ),
+    )
+    await connection.execute(
+        """
+        insert into history_events (workflow_id, seq, event_type, attributes)
+        values ($1, $2, 'WorkflowExecutionCompleted', $3::jsonb)
+        """,
+        workflow_id,
+        seq + 1,
+        canonical_json({"result": result, "cause": "continue_as_new"}),
+    )
+    await connection.execute(
+        """
+        insert into workflow_executions (
+          id, workflow_type, definition_version, input, next_seq, queue_name,
+          created_at, search_attributes, continued_from, schedule_id, scheduled_at
+        ) values ($1, $2, $3, $4::jsonb, 2, $5, $6, $7::jsonb, $8, $9, $10)
+        """,
+        command.new_workflow_id,
+        command.workflow_type,
+        command.definition_version,
+        canonical_json(command.input),
+        queue_name,
+        started_at,
+        canonical_json(continuation_attributes),
+        workflow_id,
+        current["schedule_id"],
+        current["scheduled_at"],
+    )
+    await connection.execute(
+        """
+        insert into history_events (workflow_id, seq, event_type, attributes)
+        values ($1, 1, 'WorkflowExecutionStarted', $2::jsonb)
+        """,
+        command.new_workflow_id,
+        canonical_json(
+            {
+                "workflow_type": command.workflow_type,
+                "definition_version": command.definition_version,
+                "input": command.input,
+                "search_attributes": continuation_attributes,
+                "started_at": started_at.isoformat(),
+                "continued_from": str(workflow_id),
+            }
+        ),
+    )
+    await connection.execute(
+        """
+        insert into tasks (id, workflow_id, task_type, queue_name)
+        values ($1, $2, 'workflow', $3)
+        """,
+        uuid4(),
+        command.new_workflow_id,
+        queue_name,
+    )
+    await connection.execute(
+        """
+        update workflow_executions
+        set status = 'completed', result = $2::jsonb, next_seq = $3,
+            closed_at = now(), continued_to = $4
+        where id = $1
+        """,
+        workflow_id,
+        canonical_json(result),
+        seq + 2,
+        command.new_workflow_id,
+    )
+    await _reject_pending_updates(
+        connection, workflow_id=workflow_id, reason="workflow continued as new"
+    )
+    await connection.execute(
+        """
+        update tasks set status = 'dead', completed_at = now()
+        where workflow_id = $1 and id <> $2 and status in ('pending', 'leased')
+        """,
+        workflow_id,
+        current_task_id,
+    )
+
+
 async def commit_workflow_replay(
     pool: Pool,
     *,
@@ -1175,64 +1321,79 @@ async def commit_workflow_replay(
         elif replay.status is ReplayStatus.COMMANDS:
             if not replay.commands:
                 raise TransitionError("commands replay result contains no commands")
-            marker_recorded = False
-            for command in replay.commands:
-                if isinstance(command, ScheduleActivity):
-                    await _append_activity_command(
-                        connection,
-                        workflow_id=task.workflow_id,
-                        seq=next_seq,
-                        command=command,
-                        queue_name=cast(str, locked_task["queue_name"]),
-                    )
-                elif isinstance(command, ScheduleTimer):
-                    await _append_timer_command(
-                        connection,
-                        workflow_id=task.workflow_id,
-                        seq=next_seq,
-                        command=command,
-                        queue_name=cast(str, locked_task["queue_name"]),
-                    )
-                elif isinstance(command, RecordMarker):
-                    await _append_marker_command(
-                        connection,
-                        workflow_id=task.workflow_id,
-                        seq=next_seq,
-                        command=command,
-                    )
-                    marker_recorded = True
-                elif isinstance(command, StartChildWorkflow):
-                    await _append_child_workflow_command(
-                        connection,
-                        workflow_id=task.workflow_id,
-                        seq=next_seq,
-                        command=command,
-                        parent_queue_name=cast(str, locked_task["queue_name"]),
-                    )
-                elif isinstance(command, ResolveWorkflowUpdate):
-                    await _append_update_resolution(
-                        connection,
-                        workflow_id=task.workflow_id,
-                        seq=next_seq,
-                        command=command,
-                    )
-                    marker_recorded = True
-                next_seq += 1
-            if marker_recorded:
-                await connection.execute(
-                    """
-                    insert into tasks (id, workflow_id, task_type, queue_name)
-                    values ($1, $2, 'workflow', $3)
-                    """,
-                    uuid4(),
-                    task.workflow_id,
-                    locked_task["queue_name"],
-                )
-            await connection.execute(
-                "update workflow_executions set next_seq = $2 where id = $1",
-                task.workflow_id,
-                next_seq,
+            continuations = tuple(
+                command for command in replay.commands if isinstance(command, ContinueAsNew)
             )
+            if continuations:
+                if len(replay.commands) != 1:
+                    raise TransitionError("continue-as-new must be the only emitted command")
+                await _terminate_descendants(connection, parent_workflow_id=task.workflow_id)
+                await _commit_continue_as_new(
+                    connection,
+                    workflow_id=task.workflow_id,
+                    current_task_id=task.id,
+                    seq=next_seq,
+                    command=continuations[0],
+                )
+            else:
+                marker_recorded = False
+                for command in replay.commands:
+                    if isinstance(command, ScheduleActivity):
+                        await _append_activity_command(
+                            connection,
+                            workflow_id=task.workflow_id,
+                            seq=next_seq,
+                            command=command,
+                            queue_name=cast(str, locked_task["queue_name"]),
+                        )
+                    elif isinstance(command, ScheduleTimer):
+                        await _append_timer_command(
+                            connection,
+                            workflow_id=task.workflow_id,
+                            seq=next_seq,
+                            command=command,
+                            queue_name=cast(str, locked_task["queue_name"]),
+                        )
+                    elif isinstance(command, RecordMarker):
+                        await _append_marker_command(
+                            connection,
+                            workflow_id=task.workflow_id,
+                            seq=next_seq,
+                            command=command,
+                        )
+                        marker_recorded = True
+                    elif isinstance(command, StartChildWorkflow):
+                        await _append_child_workflow_command(
+                            connection,
+                            workflow_id=task.workflow_id,
+                            seq=next_seq,
+                            command=command,
+                            parent_queue_name=cast(str, locked_task["queue_name"]),
+                        )
+                    elif isinstance(command, ResolveWorkflowUpdate):
+                        await _append_update_resolution(
+                            connection,
+                            workflow_id=task.workflow_id,
+                            seq=next_seq,
+                            command=command,
+                        )
+                        marker_recorded = True
+                    next_seq += 1
+                if marker_recorded:
+                    await connection.execute(
+                        """
+                        insert into tasks (id, workflow_id, task_type, queue_name)
+                        values ($1, $2, 'workflow', $3)
+                        """,
+                        uuid4(),
+                        task.workflow_id,
+                        locked_task["queue_name"],
+                    )
+                await connection.execute(
+                    "update workflow_executions set next_seq = $2 where id = $1",
+                    task.workflow_id,
+                    next_seq,
+                )
         elif replay.status in (ReplayStatus.COMPLETED, ReplayStatus.FAILED):
             completed = replay.status is ReplayStatus.COMPLETED
             event_type = "WorkflowExecutionCompleted" if completed else "WorkflowExecutionFailed"

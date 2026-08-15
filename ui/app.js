@@ -12,6 +12,7 @@ const state = {
   execution: null,
   history: [],
   updates: [],
+  continuationChain: [],
   historyTruncated: false,
   statusFilter: "",
   search: "",
@@ -311,6 +312,8 @@ function renderMetadata(execution) {
     ["History loaded", `${state.history.length.toLocaleString()}${state.historyTruncated ? "+" : ""} events`],
   ];
   if (execution.parent_workflow_id) items.push(["Parent workflow", shortId(execution.parent_workflow_id)]);
+  if (execution.continued_from) items.push(["Continued from", shortId(execution.continued_from)]);
+  if (execution.continued_to) items.push(["Continued to", shortId(execution.continued_to)]);
   if (execution.schedule_id) items.push(["Schedule", shortId(execution.schedule_id)]);
   if (execution.scheduled_at) items.push(["Scheduled for", formatDate(execution.scheduled_at, true), execution.scheduled_at]);
   $("metadata").replaceChildren(...items.map(([label, value, dateValue]) => {
@@ -323,6 +326,24 @@ function renderMetadata(execution) {
     className: "attribute-chip",
     attrs: { title: `${key} = ${JSON.stringify(value)}` },
   }, [element("strong", { text: key }), element("span", { text: conciseValue(value, 70) })])));
+}
+
+function renderContinuationChain(chain) {
+  const container = $("continuation-chain");
+  container.hidden = chain.length < 2;
+  container.replaceChildren();
+  if (chain.length < 2) return;
+  container.append(element("span", { className: "chain-label", text: "Run chain" }));
+  chain.forEach((run, index) => {
+    const button = element("button", {
+      className: `chain-run${run.id === state.selected ? " is-current" : ""}`,
+      text: `${index + 1} · v${run.definition_version}`,
+      attrs: { type: "button", title: `${run.id} · ${run.status}` },
+    });
+    button.addEventListener("click", () => selectExecution(run.id));
+    container.append(button);
+    if (index < chain.length - 1) container.append(element("span", { className: "chain-arrow", text: "→" }));
+  });
 }
 
 function relatedTerminal(history, scheduledEvent, terminalTypes) {
@@ -620,6 +641,7 @@ function renderDetail(execution, history) {
   $("retry-workflow").disabled = !terminal || !roleAtLeast("admin");
 
   renderMetadata(execution);
+  renderContinuationChain(state.continuationChain);
   renderOperationalState(execution, history);
   renderActivities(history);
   renderUpdates();
@@ -660,15 +682,17 @@ async function selectExecution(id, options = {}) {
   const generation = ++state.detailGeneration;
   if (!quiet || !state.execution || changed) showDetailLoading();
   try {
-    const [execution, history, updates] = await Promise.all([
+    const [execution, history, updates, continuationChain] = await Promise.all([
       api(`/api/workflows/${encodeURIComponent(id)}`, { quiet }),
       loadExecutionHistory(id, quiet),
       api(`/api/workflows/${encodeURIComponent(id)}/updates?limit=100`, { quiet }),
+      api(`/api/workflows/${encodeURIComponent(id)}/continuation-chain`, { quiet }),
     ]);
     if (generation !== state.detailGeneration || state.selected !== id) return;
     state.execution = execution;
     state.history = history.items;
     state.updates = updates;
+    state.continuationChain = continuationChain;
     state.historyTruncated = history.truncated;
     renderDetail(execution, history.items);
   } catch (error) {

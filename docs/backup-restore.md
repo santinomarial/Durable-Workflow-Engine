@@ -55,11 +55,11 @@ maximum page size of 1,000. The console loads a bounded prefix plus the latest
 tail and explicitly marks omitted middle history instead of exhausting browser
 memory.
 
-Workflow replay still reads a complete history because snapshots,
-continue-as-new, and archival are semantic engine features rather than safe
-housekeeping deletions. Use the published replay and queue-depth benchmarks to
-set workload admission limits, alert on history growth, and design workflows
-with bounded event counts. Do not delete history rows from a live database; that
-breaks deterministic replay. Deployments expecting routinely long histories
-must add snapshots or continuation before treating those workloads as
-supported.
+Workflow replay still reads a complete history for each run because snapshots
+and archival are semantic engine features rather than safe housekeeping
+deletions. Workflows can use `ctx.continue_as_new(...)` to atomically close the
+current run and start a linked fresh history; the inspection API exposes the
+entire chain. Use the published replay and queue-depth benchmarks to set
+workload admission limits, alert on per-run history growth, and continue before
+the published envelope. Do not delete history rows from a live database; that
+breaks deterministic replay.

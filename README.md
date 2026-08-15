@@ -28,8 +28,8 @@ It does not guarantee exactly-once arbitrary side effects. An activity can
 perform an external effect and die before recording completion. Exactly-once
 behavior exists only when that external boundary atomically deduplicates the
 engine-provided idempotency key. It also does not provide multi-region storage,
-sharding, multi-tenancy, child workflows, cron, search attributes, or automatic
-migration of running workflow code. The control-plane authentication described
+sharding, multi-tenancy, or automatic migration of running workflow code. The
+control-plane authentication described
 below protects API access; it is not tenant isolation.
 
 The central guarantee is:
@@ -90,7 +90,9 @@ dead-letter inspection, durable timezone-aware cron schedules and backfills,
 deterministic child workflows with close-policy propagation, termination, and
 validated result-bearing workflow updates, typed Python handles and snapshot
 queries, and indexed JSON search attributes with server-side visibility
-filtering. OpenAPI documentation is at `/docs`; SDK examples are in the
+filtering. Long-running workflows can atomically continue as new into another
+pinned version, preserving chain navigation while starting a bounded fresh
+history. OpenAPI documentation is at `/docs`; SDK examples are in the
 [Python SDK guide](docs/sdk.md).
 Production authentication is fail closed and uses hashed bearer-key
 configuration with viewer, operator, and administrator roles. See the
@@ -228,7 +230,7 @@ The first practical knee is PostgreSQL task-index scanning at 10,000 pending
 tasks. No hard failure occurred in the tested range, so the raw failure point is
 `null`; 10,000 is the observed latency breakpoint, not a universal capacity
 limit. Replay cost is linear and reaches 422 ms at 100,000 events. A larger
-design would first add snapshots/continuation and partition task indexes plus
+design would first add snapshots and partition task indexes plus
 execution/history ownership by queue or workflow ID.
 
 Full metadata, workloads, sample sizes, warmup policy, limitations, raw JSON,
@@ -261,8 +263,11 @@ uv run pytest
 
 ## Known limitations
 
-- Histories are loaded in full; snapshots, pagination, continue-as-new, and
-  archival are not implemented.
+- Worker replay still loads one run's history in full. Continue-as-new bounds
+  individual runs, but replay snapshots and automated history archival are not
+  implemented. Inspection APIs are cursor-paginated.
+- Continue-as-new is currently restricted to top-level workflows; child-run
+  continuation needs chain-aware parent completion semantics.
 - PostgreSQL is a single coordination boundary; there is no sharding,
   multi-region failover, or independent message broker.
 - The API/UI provide hashed bearer-key authentication, role authorization,

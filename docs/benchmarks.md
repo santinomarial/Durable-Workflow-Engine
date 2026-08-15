@@ -43,7 +43,7 @@ knee was 10,000 pending tasks: dispatch p99 rose from 1.27 ms at depth 1,000 to
 
 Replay is linear in history length: throughput stayed near 237k–291k events/s,
 while absolute replay time grew to 422 ms at 100,000 events. The design therefore
-needs history pagination, snapshots, or continuation-as-new before very long
+needs snapshots or application-triggered continue-as-new before very long
 executions become routine.
 
 Queue depth was the first visible PostgreSQL degradation. Lease-selection p50

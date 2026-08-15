@@ -60,6 +60,22 @@ class ResolveWorkflowUpdate:
     fingerprint: str
 
 
+@dataclass(frozen=True, slots=True)
+class ContinueAsNew:
+    command_id: int
+    new_workflow_id: UUID
+    workflow_type: str
+    definition_version: int
+    input: JSONValue
+    queue_name: str | None
+    fingerprint: str
+
+
 type Command = (
-    RecordMarker | ResolveWorkflowUpdate | ScheduleActivity | ScheduleTimer | StartChildWorkflow
+    ContinueAsNew
+    | RecordMarker
+    | ResolveWorkflowUpdate
+    | ScheduleActivity
+    | ScheduleTimer
+    | StartChildWorkflow
 )

@@ -369,6 +369,11 @@ kbd { display: inline-grid; min-width: 21px; min-height: 20px; margin: 0 2px; pl
 .metadata-grid dd { overflow: hidden; color: var(--text-soft); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .attribute-strip { display: flex; min-height: 0; flex-wrap: wrap; gap: 7px; padding: 0 30px; border-bottom: 1px solid transparent; transition: padding .15s ease, border-color .15s ease; }
 .attribute-strip:not(:empty) { padding-block: 12px; border-color: var(--line); }
+.continuation-chain { display: flex; align-items: center; gap: 7px; padding: 10px 30px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+.chain-label { margin-right: 3px; color: var(--text-muted); font-size: 9px; font-weight: 760; letter-spacing: .09em; text-transform: uppercase; white-space: nowrap; }
+.chain-run { padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--surface-raised); color: var(--text-soft); font-family: var(--mono); font-size: 9px; cursor: pointer; white-space: nowrap; }
+.chain-run:hover, .chain-run.is-current { border-color: var(--accent); color: var(--accent); }
+.chain-arrow { color: var(--text-muted); font-size: 10px; }
 .attribute-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface-raised); color: var(--text-soft); font: 600 10px/1.2 var(--font-mono); }
 .attribute-chip strong { color: var(--accent); font-weight: 760; }
 .attribute-chip span { overflow: hidden; max-width: 220px; text-overflow: ellipsis; white-space: nowrap; }

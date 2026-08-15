@@ -36,6 +36,8 @@ class ExecutionSummary:
     parent_workflow_id: UUID | None
     parent_command_id: int | None
     parent_close_policy: str | None
+    continued_from: UUID | None
+    continued_to: UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +96,8 @@ def _execution(row: dict[str, object]) -> ExecutionSummary:
         parent_workflow_id=cast(UUID | None, row["parent_workflow_id"]),
         parent_command_id=cast(int | None, row["parent_command_id"]),
         parent_close_policy=cast(str | None, row["parent_close_policy"]),
+        continued_from=cast(UUID | None, row["continued_from"]),
+        continued_to=cast(UUID | None, row["continued_to"]),
     )
 
 
@@ -149,6 +153,37 @@ async def get_execution(pool: Pool, workflow_id: UUID) -> ExecutionSummary | Non
             workflow_id,
         )
     return _execution(dict(row)) if row is not None else None
+
+
+async def get_continuation_chain(pool: Pool, workflow_id: UUID) -> tuple[ExecutionSummary, ...]:
+    """Return the complete immutable execution chain containing ``workflow_id``."""
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            with recursive ancestors as (
+              select id, continued_from, 0 as depth
+              from workflow_executions where id = $1
+              union all
+              select previous.id, previous.continued_from, ancestors.depth + 1
+              from ancestors
+              join workflow_executions previous on previous.id = ancestors.continued_from
+              where ancestors.depth < 999
+            ), root as (
+              select id from ancestors order by depth desc limit 1
+            ), chain as (
+              select execution.*, 0 as chain_index
+              from root join workflow_executions execution on execution.id = root.id
+              union all
+              select following.*, chain.chain_index + 1
+              from chain
+              join workflow_executions following on following.id = chain.continued_to
+              where chain.chain_index < 999
+            )
+            select * from chain order by chain_index
+            """,
+            workflow_id,
+        )
+    return tuple(_execution(dict(row)) for row in rows)
 
 
 async def get_execution_stats(pool: Pool) -> ExecutionStats:

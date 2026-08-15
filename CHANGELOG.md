@@ -20,6 +20,7 @@ migration compatibility remain explicit release requirements.
 - Timezone-aware durable cron schedules with overlap policies and bounded backfills.
 - Replay-native child workflows with atomic start, result propagation, and recursive parent-close policy.
 - Deduplicated result-bearing workflow updates, typed handles, and snapshot query projections.
+- Atomic continue-as-new with version handoff, inherited visibility metadata, and complete chain inspection.
 
 ## [0.1.0] - 2026-08-15
 
