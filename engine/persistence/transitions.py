@@ -192,6 +192,7 @@ async def load_workflow_replay_state(pool: Pool, task: LeasedTask) -> WorkflowRe
             select exists (
               select 1 from tasks
               where id = $1 and status = 'leased' and lease_token = $2
+                and lease_expires_at > now()
             )
             """,
             task.id,
@@ -311,6 +312,7 @@ async def commit_workflow_replay(
             select workflow_id, queue_name
             from tasks
             where id = $1 and status = 'leased' and lease_token = $2
+              and lease_expires_at > now()
             for update
             """,
             task.id,
@@ -410,6 +412,12 @@ async def complete_activity(
             select workflow_id, entity_id, attempt, queue_name
             from tasks
             where id = $1 and status = 'leased' and lease_token = $2
+              and lease_expires_at > now()
+              and (start_to_close_deadline is null or start_to_close_deadline > now())
+              and (
+                heartbeat_timeout is null
+                or heartbeat_at + heartbeat_timeout > now()
+              )
             for update
             """,
             task.id,
@@ -533,6 +541,12 @@ async def fail_activity(
                    start_to_close_timeout, heartbeat_timeout
             from tasks
             where id = $1 and status = 'leased' and lease_token = $2
+              and lease_expires_at > now()
+              and (start_to_close_deadline is null or start_to_close_deadline > now())
+              and (
+                heartbeat_timeout is null
+                or heartbeat_at + heartbeat_timeout > now()
+              )
             for update
             """,
             task.id,

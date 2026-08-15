@@ -9,6 +9,7 @@ from engine.persistence.leasing import (
     reclaim_expired_workflow_tasks,
     renew_lease,
 )
+from engine.persistence.timeouts import process_activity_timeout
 from engine.persistence.transitions import (
     StartedWorkflow,
     WorkflowReplayState,
@@ -33,6 +34,7 @@ __all__ = [
     "heartbeat_activity",
     "lease_task",
     "load_workflow_replay_state",
+    "process_activity_timeout",
     "reclaim_expired_workflow_tasks",
     "register_workflow_definition",
     "renew_lease",
