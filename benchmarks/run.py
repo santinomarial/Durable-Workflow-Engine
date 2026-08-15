@@ -18,6 +18,7 @@ from engine.persistence import (
     create_pool,
     fire_due_timer,
     lease_task,
+    process_activity_timeout,
     reclaim_expired_workflow_tasks,
     register_workflow_definition,
     send_signal,
@@ -64,7 +65,11 @@ async def benchmark_timer(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
 
 @workflow(version=1, name="benchmark-activity-dispatch")
 async def benchmark_activity_dispatch(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
-    return await ctx.activity(benchmark_identity, value)
+    return await ctx.activity(
+        benchmark_identity,
+        value,
+        retry=RetryPolicy(max_attempts=2, initial_interval=timedelta(0)),
+    )
 
 
 def percentile(samples: list[float], fraction: float) -> float:
@@ -239,6 +244,48 @@ async def benchmark_postgres(database_url: str, profile: str) -> dict[str, Any]:
         assert replacement is not None and replacement.workflow_id == recovery_execution.workflow_id
         recovery_ms = (time.perf_counter() - began) * 1_000
 
+        activity_recovery_execution = await start_workflow(
+            pool,
+            workflow_type=benchmark_activity_dispatch.name,
+            definition_version=1,
+            workflow_input=None,
+            queue_name="benchmark-activity-recovery",
+        )
+        assert await run_workflow_task(pool, registry, queue_name="benchmark-activity-recovery")
+        abandoned_activity = await lease_task(
+            pool,
+            task_type="activity",
+            queue_name="benchmark-activity-recovery",
+        )
+        assert abandoned_activity is not None
+        async with pool.acquire() as connection:
+            await connection.execute(
+                "update tasks set lease_expires_at = now() - interval '1 second' where id = $1",
+                abandoned_activity.id,
+            )
+        began = time.perf_counter()
+        assert await process_activity_timeout(
+            pool,
+            queue_name="benchmark-activity-recovery",
+            random_value=0,
+        )
+        replacement_activity = None
+        for _ in range(100):
+            replacement_activity = await lease_task(
+                pool,
+                task_type="activity",
+                queue_name="benchmark-activity-recovery",
+            )
+            if replacement_activity is not None:
+                break
+            await asyncio.sleep(0.001)
+        assert (
+            replacement_activity is not None
+            and replacement_activity.workflow_id == activity_recovery_execution.workflow_id
+            and replacement_activity.attempt == 2
+        )
+        activity_recovery_ms = (time.perf_counter() - began) * 1_000
+
         timer_delays = []
         timer_count = 20 if profile == "quick" else 200
         for index in range(timer_count):
@@ -386,7 +433,8 @@ async def benchmark_postgres(database_url: str, profile: str) -> dict[str, Any]:
             "workflow_dispatch_call_ms": distribution(workflow_dispatch_samples),
             "activity_dispatch_call_ms": distribution(activity_dispatch_samples),
             "timer_fire_delay_ms": distribution(timer_delays),
-            "expired_lease_recovery_ms": recovery_ms,
+            "expired_workflow_lease_recovery_ms": recovery_ms,
+            "expired_activity_lease_recovery_ms": activity_recovery_ms,
             "append_transition_ms_by_history_size": append_cost,
             "dispatch_ms_by_pending_depth": depth_results,
             "leases_per_second_by_concurrent_pollers": contention,
