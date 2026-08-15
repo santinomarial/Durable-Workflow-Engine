@@ -30,6 +30,14 @@ class ActivityError(RuntimeError):
         super().__init__(f"activity {activity_type!r} failed: {failure!r}")
 
 
+class SignalTimeoutError(TimeoutError):
+    """Raised when a durable signal wait's timer wins the recorded race."""
+
+    def __init__(self, signal_name: str) -> None:
+        self.signal_name = signal_name
+        super().__init__(f"timed out waiting for signal {signal_name!r}")
+
+
 class _ReplaySuspended(BaseException):
     pass
 
@@ -148,6 +156,8 @@ class WorkflowContext:
                     command_id=command_id,
                     entity_id=entity_id,
                     delay_seconds=delay_seconds,
+                    purpose="sleep",
+                    signal_name=None,
                     fingerprint=command_fingerprint,
                 )
             )
@@ -170,14 +180,65 @@ class WorkflowContext:
         if terminal.event_type == "TimerCanceled":
             raise RuntimeError("timer was canceled")
 
-    async def wait_signal(self, name: str) -> JSONValue:
+    async def wait_signal(self, name: str, *, timeout: timedelta | None = None) -> JSONValue:
         """Consume the earliest unconsumed matching signal from durable history."""
         if not name:
             raise ValueError("signal name cannot be empty")
+        matching_signal = None
         for event in self._history.signals:
             if event.seq in self._consumed_signal_seqs:
                 continue
             if event.attributes.get("name") == name:
-                self._consumed_signal_seqs.add(event.seq)
-                return clone_json(event.attributes.get("payload"))
+                matching_signal = event
+                break
+        if timeout is None:
+            if matching_signal is not None:
+                self._consumed_signal_seqs.add(matching_signal.seq)
+                return clone_json(matching_signal.attributes.get("payload"))
+            raise _Blocked
+
+        command_id = self._next_command_id
+        self._next_command_id += 1
+        delay_seconds = timeout.total_seconds()
+        if delay_seconds < 0:
+            raise ValueError("signal timeout cannot be negative")
+        command_fingerprint = fingerprint(
+            {
+                "command_type": "signal_timeout",
+                "signal_name": name,
+                "delay_seconds": delay_seconds,
+            }
+        )
+        scheduled = self._history.scheduled.get(command_id)
+        if scheduled is None:
+            entity_id = uuid5(
+                ENTITY_NAMESPACE,
+                f"{self._workflow_id}:signal-timeout:{command_id}",
+            )
+            raise _NewCommand(
+                ScheduleTimer(
+                    command_id=command_id,
+                    entity_id=entity_id,
+                    delay_seconds=delay_seconds,
+                    purpose="signal_timeout",
+                    signal_name=name,
+                    fingerprint=command_fingerprint,
+                )
+            )
+        if scheduled.event_type != "TimerStarted":
+            raise NonDeterminismError(
+                command_id,
+                f"expected signal timeout, history contains {scheduled.event_type}",
+            )
+        if scheduled.attributes.get("fingerprint") != command_fingerprint:
+            raise NonDeterminismError(command_id, f"signal timeout for {name!r} changed")
+        assert scheduled.entity_id is not None
+        timer_terminal = self._history.timer_terminal.get(scheduled.entity_id)
+        if matching_signal is not None and (
+            timer_terminal is None or matching_signal.seq < timer_terminal.seq
+        ):
+            self._consumed_signal_seqs.add(matching_signal.seq)
+            return clone_json(matching_signal.attributes.get("payload"))
+        if timer_terminal is not None and timer_terminal.event_type == "TimerFired":
+            raise SignalTimeoutError(name)
         raise _Blocked

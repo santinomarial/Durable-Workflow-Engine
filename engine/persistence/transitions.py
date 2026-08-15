@@ -317,7 +317,12 @@ async def _append_timer_command(
         command.command_id,
         command.entity_id,
         canonical_json(
-            {"delay_seconds": command.delay_seconds, "fingerprint": command.fingerprint}
+            {
+                "delay_seconds": command.delay_seconds,
+                "fingerprint": command.fingerprint,
+                "purpose": command.purpose,
+                "signal_name": command.signal_name,
+            }
         ),
     )
     await connection.execute(
@@ -335,7 +340,13 @@ async def _append_timer_command(
         queue_name,
         command.entity_id,
         command.command_id,
-        canonical_json({"delay_seconds": command.delay_seconds}),
+        canonical_json(
+            {
+                "delay_seconds": command.delay_seconds,
+                "purpose": command.purpose,
+                "signal_name": command.signal_name,
+            }
+        ),
         command.delay_seconds,
     )
 

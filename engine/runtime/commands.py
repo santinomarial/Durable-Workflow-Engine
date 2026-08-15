@@ -26,6 +26,8 @@ class ScheduleTimer:
     command_id: int
     entity_id: UUID
     delay_seconds: float
+    purpose: str
+    signal_name: str | None
     fingerprint: str
 
 

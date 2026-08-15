@@ -213,7 +213,12 @@ async def test_timer_replay_schedules_blocks_and_resolves() -> None:
     timer_started = HistoryEvent(
         2,
         "TimerStarted",
-        {"delay_seconds": timer.delay_seconds, "fingerprint": timer.fingerprint},
+        {
+            "delay_seconds": timer.delay_seconds,
+            "fingerprint": timer.fingerprint,
+            "purpose": timer.purpose,
+            "signal_name": timer.signal_name,
+        },
         command_id=timer.command_id,
         entity_id=timer.entity_id,
     )
