@@ -59,6 +59,7 @@ async def test_start_workflow_commits_execution_history_and_task_atomically() ->
             workflow_input={"order_id": "order-123"},
             queue_name="orders",
             workflow_id=workflow_id,
+            search_attributes={"order_id": "order-123", "priority": 7},
         )
         assert started.workflow_id == workflow_id
 
@@ -77,6 +78,10 @@ async def test_start_workflow_commits_execution_history_and_task_atomically() ->
         assert execution["status"] == "running"
         assert execution["next_seq"] == 2
         assert json.loads(execution["input"]) == {"order_id": "order-123"}
+        assert json.loads(execution["search_attributes"]) == {
+            "order_id": "order-123",
+            "priority": 7,
+        }
         assert [(event["seq"], event["event_type"]) for event in history] == [
             (1, "WorkflowExecutionStarted")
         ]

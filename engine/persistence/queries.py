@@ -27,6 +27,7 @@ class ExecutionSummary:
     closed_at: datetime | None
     cancellation_requested_at: datetime | None
     cancellation_reason: str | None
+    search_attributes: dict[str, JSONValue]
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +77,7 @@ def _execution(row: dict[str, object]) -> ExecutionSummary:
         closed_at=cast(datetime | None, row["closed_at"]),
         cancellation_requested_at=cast(datetime | None, row["cancellation_requested_at"]),
         cancellation_reason=cast(str | None, row["cancellation_reason"]),
+        search_attributes=cast(dict[str, JSONValue], _json(row["search_attributes"])),
     )
 
 
@@ -83,19 +85,42 @@ async def list_executions(
     pool: Pool,
     *,
     status: str | None = None,
+    workflow_type: str | None = None,
+    queue_name: str | None = None,
+    query: str | None = None,
+    search_attributes: dict[str, JSONValue] | None = None,
     limit: int = 100,
 ) -> tuple[ExecutionSummary, ...]:
     if limit < 1 or limit > 1000:
         raise ValueError("limit must be between 1 and 1000")
     async with pool.acquire() as connection:
+        encoded_attributes = json.dumps(search_attributes or {}, separators=(",", ":"))
         rows = await connection.fetch(
             """
             select * from workflow_executions
-            where ($1::workflow_status is null or status = $1)
+            where (
+                $1::text is null
+                or ($1 = 'attention' and status in ('failed', 'terminated'))
+                or status::text = $1
+              )
+              and ($2::text is null or workflow_type = $2)
+              and ($3::text is null or queue_name = $3)
+              and (
+                $4::text is null
+                or id::text ilike '%' || $4 || '%'
+                or workflow_type ilike '%' || $4 || '%'
+                or queue_name ilike '%' || $4 || '%'
+                or search_attributes::text ilike '%' || $4 || '%'
+              )
+              and search_attributes @> $5::jsonb
             order by created_at desc, id
-            limit $2
+            limit $6
             """,
             status,
+            workflow_type,
+            queue_name,
+            query,
+            encoded_attributes,
             limit,
         )
     return tuple(_execution(dict(row)) for row in rows)

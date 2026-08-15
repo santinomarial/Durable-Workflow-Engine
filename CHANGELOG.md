@@ -15,6 +15,7 @@ migration compatibility remain explicit release requirements.
 - Non-root locked container, hardened Compose reference, and secret-file config.
 - Cursor-based history inspection, backup/restore tooling, and recovery guidance.
 - Dependency, static, CodeQL, secret, misconfiguration, and container scanning.
+- Indexed JSON search attributes with API filtering and operations-console editing.
 
 ## [0.1.0] - 2026-08-15
 

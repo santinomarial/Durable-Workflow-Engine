@@ -44,6 +44,7 @@ async def test_queries_and_termination_expose_consistent_terminal_state() -> Non
             definition_version=1,
             workflow_input={"inspect": True},
             queue_name="inspection-queue",
+            search_attributes={"customer_id": "inspect-1", "priority": 4},
         )
         assert await terminate_workflow(
             pool, workflow_id=started.workflow_id, reason="operator request"
@@ -59,12 +60,21 @@ async def test_queries_and_termination_expose_consistent_terminal_state() -> Non
         assert execution.status == "terminated"
         assert execution.closed_at is not None
         assert execution.input == {"inspect": True}
+        assert execution.search_attributes == {"customer_id": "inspect-1", "priority": 4}
         assert [event.event_type for event in history] == [
             "WorkflowExecutionStarted",
             "WorkflowExecutionTerminated",
         ]
         assert history[-1].attributes == {"reason": "operator request"}
         assert started.workflow_id in {item.id for item in terminated}
+        matching = await list_executions(
+            pool,
+            workflow_type="inspection-e2e",
+            queue_name="inspection-queue",
+            query="inspect-1",
+            search_attributes={"priority": 4},
+        )
+        assert [item.id for item in matching] == [started.workflow_id]
         async with pool.acquire() as connection:
             open_tasks = await connection.fetchval(
                 """

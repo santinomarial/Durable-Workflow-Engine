@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -47,7 +48,7 @@ async def test_api_controls_and_inspects_workflow() -> None:
             health = await client.get("/api/health")
             assert health.json()["status"] == "ready"
             assert health.json()["database"] == "ok"
-            assert health.json()["schema_version"] == "0009"
+            assert health.json()["schema_version"] == "0010"
             assert health.headers["cache-control"] == "no-store"
             assert health.headers["x-content-type-options"] == "nosniff"
             assert health.headers["x-frame-options"] == "DENY"
@@ -112,6 +113,11 @@ async def test_api_controls_and_inspects_workflow() -> None:
                     "definition_version": 1,
                     "input": {"request": 42},
                     "queue_name": "api-queue",
+                    "search_attributes": {
+                        "customer_id": "customer-42",
+                        "priority": 9,
+                        "region": "us-east",
+                    },
                 },
             )
             assert started.status_code == 201
@@ -120,6 +126,23 @@ async def test_api_controls_and_inspects_workflow() -> None:
             assert workflow_id in {item["id"] for item in listing.json()}
             detail = await client.get(f"/api/workflows/{workflow_id}")
             assert detail.json()["input"] == {"request": 42}
+            assert detail.json()["search_attributes"]["customer_id"] == "customer-42"
+            attribute_listing = await client.get(
+                "/api/workflows",
+                params={"attributes": json.dumps({"priority": 9})},
+            )
+            assert [item["id"] for item in attribute_listing.json()] == [workflow_id]
+            text_listing = await client.get("/api/workflows", params={"query": "customer-42"})
+            assert [item["id"] for item in text_listing.json()] == [workflow_id]
+            changed_attributes = await client.patch(
+                f"/api/workflows/{workflow_id}/search-attributes",
+                json={"set": {"priority": 10, "team": "fulfillment"}, "unset": ["region"]},
+            )
+            assert changed_attributes.json()["search_attributes"] == {
+                "customer_id": "customer-42",
+                "priority": 10,
+                "team": "fulfillment",
+            }
 
             signal = await client.post(
                 f"/api/workflows/{workflow_id}/signals",
@@ -196,6 +219,7 @@ async def test_api_controls_and_inspects_workflow() -> None:
                 "workflow.terminate",
                 "workflow.signal",
                 "workflow.signal",
+                "workflow.search-attributes.update",
                 "workflow.start",
             ]
             assert all(record["actor_key_id"] == "api-admin" for record in audit.json())

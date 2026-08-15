@@ -45,6 +45,7 @@ from engine.persistence.transitions import (
     request_workflow_cancellation,
     start_workflow,
     terminate_workflow,
+    update_search_attributes,
 )
 from engine.sdk.activity_context import ActivityCancellationRequested
 
@@ -92,4 +93,5 @@ __all__ = [
     "start_workflow",
     "stop_worker",
     "terminate_workflow",
+    "update_search_attributes",
 ]

@@ -14,6 +14,7 @@ const state = {
   historyTruncated: false,
   statusFilter: "",
   search: "",
+  searchTimer: null,
   eventFilter: "",
   historySearch: "",
   activeTab: "overview",
@@ -237,7 +238,7 @@ function filteredExecutions() {
   return state.executions.filter((execution) => {
     if (!matchesStatus(execution)) return false;
     if (!query) return true;
-    return [execution.id, execution.workflow_type, execution.queue_name, execution.status]
+    return [execution.id, execution.workflow_type, execution.queue_name, execution.status, JSON.stringify(execution.search_attributes || {})]
       .some((value) => String(value).toLowerCase().includes(query));
   });
 }
@@ -311,6 +312,11 @@ function renderMetadata(execution) {
     if (dateValue) dd.setAttribute("data-date", dateValue);
     return element("div", {}, [element("dt", { text: label }), dd]);
   }));
+  const attributes = Object.entries(execution.search_attributes || {}).sort(([left], [right]) => left.localeCompare(right));
+  $("search-attributes").replaceChildren(...attributes.map(([key, value]) => element("span", {
+    className: "attribute-chip",
+    attrs: { title: `${key} = ${JSON.stringify(value)}` },
+  }, [element("strong", { text: key }), element("span", { text: conciseValue(value, 70) })])));
 }
 
 function relatedTerminal(history, scheduledEvent, terminalTypes) {
@@ -588,6 +594,7 @@ function renderDetail(execution, history) {
 
   const terminal = TERMINAL_STATUSES.has(execution.status);
   $("open-signal").disabled = terminal || !roleAtLeast("operator");
+  $("open-attributes").disabled = !roleAtLeast("operator");
   $("request-cancel").disabled = terminal || Boolean(execution.cancellation_requested_at) || !roleAtLeast("operator");
   $("request-cancel").textContent = execution.cancellation_requested_at ? "Cancellation requested" : "Request cancellation";
   $("request-terminate").disabled = terminal || !roleAtLeast("admin");
@@ -681,9 +688,12 @@ async function loadDashboard(options = {}) {
   $("refresh").classList.add("is-refreshing");
   if (!state.initialized && !quiet) showListState("Loading executions", "Connecting to durable storage…");
   try {
+    const executionParams = new URLSearchParams({ limit: "1000" });
+    if (state.statusFilter) executionParams.set("status", state.statusFilter);
+    if (state.search.trim()) executionParams.set("query", state.search.trim());
     const [stats, executions] = await Promise.all([
       api("/api/stats", { quiet }),
-      api("/api/workflows?limit=1000", { quiet }),
+      api(`/api/workflows?${executionParams}`, { quiet }),
       loadHealth(quiet),
     ]);
     state.stats = stats;
@@ -873,10 +883,12 @@ async function startWorkflow(event) {
     if (!queueName) throw new Error("Task queue is required.");
     if (!Number.isInteger(definitionVersion) || definitionVersion < 1) throw new Error("Definition version must be 1 or greater.");
     const input = parseJSON($("start-input").value, "Workflow input");
+    const searchAttributes = parseJSON($("start-attributes").value, "Search attributes");
+    if (!searchAttributes || Array.isArray(searchAttributes) || typeof searchAttributes !== "object") throw new Error("Search attributes must be a JSON object.");
     setSubmitting(button, true, "Starting…");
     const started = await api("/api/workflows", {
       method: "POST",
-      body: JSON.stringify({ workflow_type: workflowType, definition_version: definitionVersion, queue_name: queueName, input }),
+      body: JSON.stringify({ workflow_type: workflowType, definition_version: definitionVersion, queue_name: queueName, input, search_attributes: searchAttributes }),
     });
     closeDialog("start-dialog");
     toast("Workflow started", `${workflowType} is now running.`);
@@ -891,6 +903,32 @@ async function startWorkflow(event) {
     errorNode.hidden = false;
   } finally {
     setSubmitting(button, false, "Start workflow");
+  }
+}
+
+async function saveSearchAttributes(event) {
+  event.preventDefault();
+  if (!state.selected || !state.execution) return;
+  const errorNode = $("attributes-error");
+  const button = $("attributes-submit");
+  errorNode.hidden = true;
+  try {
+    const attributes = parseJSON($("attributes-json").value, "Search attributes");
+    if (!attributes || Array.isArray(attributes) || typeof attributes !== "object") throw new Error("Search attributes must be a JSON object.");
+    const unset = Object.keys(state.execution.search_attributes || {}).filter((key) => !(key in attributes));
+    setSubmitting(button, true, "Saving…");
+    await api(`/api/workflows/${encodeURIComponent(state.selected)}/search-attributes`, {
+      method: "PATCH",
+      body: JSON.stringify({ set: attributes, unset }),
+    });
+    closeDialog("attributes-dialog");
+    toast("Attributes updated", "Indexed visibility metadata is available immediately.");
+    await loadDashboard();
+  } catch (error) {
+    errorNode.textContent = error.message;
+    errorNode.hidden = false;
+  } finally {
+    setSubmitting(button, false, "Save attributes");
   }
 }
 
@@ -986,6 +1024,8 @@ function bindEvents() {
   $("execution-search").addEventListener("input", (event) => {
     state.search = event.target.value;
     renderExecutionList();
+    if (state.searchTimer) window.clearTimeout(state.searchTimer);
+    state.searchTimer = window.setTimeout(() => loadDashboard({ quiet: true, refreshDetail: false }), 250);
   });
   $("status-filter").addEventListener("change", (event) => {
     state.statusFilter = VALID_STATUSES.has(event.target.value) ? event.target.value : "";
@@ -1026,6 +1066,12 @@ function bindEvents() {
     $("signal-error").hidden = true;
     showDialog("signal-dialog", "signal-name");
   });
+  $("open-attributes").addEventListener("click", () => {
+    $("attributes-json").value = JSON.stringify(state.execution?.search_attributes || {}, null, 2);
+    $("attributes-error").hidden = true;
+    showDialog("attributes-dialog", "attributes-json");
+  });
+  $("attributes-form").addEventListener("submit", saveSearchAttributes);
   $("signal-form").addEventListener("submit", sendSignal);
   $("request-cancel").addEventListener("click", () => prepareConfirmation("cancel"));
   $("request-terminate").addEventListener("click", () => prepareConfirmation("terminate"));

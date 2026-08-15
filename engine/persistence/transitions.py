@@ -112,6 +112,7 @@ async def start_workflow(
     workflow_input: JSONValue,
     queue_name: str = "default",
     workflow_id: UUID | None = None,
+    search_attributes: dict[str, JSONValue] | None = None,
     audit: AuditContext | None = None,
 ) -> StartedWorkflow:
     """Atomically create an execution, its first event, and its first task."""
@@ -125,12 +126,19 @@ async def start_workflow(
     execution_id = workflow_id or uuid4()
     started_at = datetime.now(UTC)
     detached_input = clone_json(workflow_input)
+    detached_search_attributes = clone_json(search_attributes or {})
+    if not isinstance(detached_search_attributes, dict):
+        raise ValueError("search_attributes must be a JSON object")
+    encoded_search_attributes = canonical_json(detached_search_attributes)
+    if len(encoded_search_attributes.encode()) > 16_000:
+        raise ValueError("search_attributes cannot exceed 16 KB")
     encoded_input = canonical_json(detached_input)
     started_attributes = canonical_json(
         {
             "workflow_type": workflow_type,
             "definition_version": definition_version,
             "input": detached_input,
+            "search_attributes": detached_search_attributes,
             "started_at": started_at.isoformat(),
         }
     )
@@ -156,8 +164,9 @@ async def start_workflow(
         await connection.execute(
             """
             insert into workflow_executions (
-              id, workflow_type, definition_version, input, next_seq, queue_name, created_at
-            ) values ($1, $2, $3, $4::jsonb, 2, $5, $6)
+              id, workflow_type, definition_version, input, next_seq, queue_name, created_at,
+              search_attributes
+            ) values ($1, $2, $3, $4::jsonb, 2, $5, $6, $7::jsonb)
             """,
             execution_id,
             workflow_type,
@@ -165,6 +174,7 @@ async def start_workflow(
             encoded_input,
             queue_name,
             started_at,
+            encoded_search_attributes,
         )
         await connection.execute(
             """
@@ -193,10 +203,55 @@ async def start_workflow(
                 "workflow_type": workflow_type,
                 "definition_version": definition_version,
                 "queue_name": queue_name,
+                "search_attributes": detached_search_attributes,
             },
         )
 
     return StartedWorkflow(execution_id, workflow_type, definition_version)
+
+
+async def update_search_attributes(
+    pool: Pool,
+    *,
+    workflow_id: UUID,
+    attributes: dict[str, JSONValue],
+    unset: tuple[str, ...] = (),
+    audit: AuditContext | None = None,
+) -> dict[str, JSONValue]:
+    """Atomically merge visibility metadata without changing replay history."""
+    detached = clone_json(attributes)
+    if not isinstance(detached, dict):
+        raise ValueError("attributes must be a JSON object")
+    if any(not key or len(key) > 200 for key in (*detached.keys(), *unset)):
+        raise ValueError("search attribute keys must contain 1 to 200 characters")
+    async with pool.acquire() as connection, connection.transaction():
+        execution = await connection.fetchrow(
+            "select search_attributes from workflow_executions where id = $1 for update",
+            workflow_id,
+        )
+        if execution is None:
+            raise TransitionError(f"workflow {workflow_id} does not exist")
+        current = _decode_json(execution["search_attributes"])
+        if not isinstance(current, dict):
+            raise TypeError("stored search attributes must be a JSON object")
+        merged = {**current, **detached}
+        for key in unset:
+            merged.pop(key, None)
+        if len(canonical_json(merged).encode()) > 16_000:
+            raise ValueError("search_attributes cannot exceed 16 KB")
+        await connection.execute(
+            "update workflow_executions set search_attributes = $2::jsonb where id = $1",
+            workflow_id,
+            canonical_json(merged),
+        )
+        await record_api_audit(
+            connection,
+            audit,
+            workflow_id=workflow_id,
+            accepted=True,
+            details={"set": detached, "unset": list(unset)},
+        )
+    return merged
 
 
 async def _cancel_pending_timers(

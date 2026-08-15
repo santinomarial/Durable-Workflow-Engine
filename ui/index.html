@@ -98,7 +98,7 @@
             <label class="search-field" for="execution-search">
               <span class="search-icon" aria-hidden="true"></span>
               <span class="sr-only">Search executions</span>
-              <input id="execution-search" type="search" placeholder="Search type, ID, or queue" autocomplete="off">
+              <input id="execution-search" type="search" placeholder="Search type, ID, queue, or attributes" autocomplete="off">
               <kbd>/</kbd>
             </label>
             <label class="select-field" for="status-filter">
@@ -157,12 +157,14 @@
               </div>
               <div class="detail-actions">
                 <button id="open-signal" class="button button-secondary" type="button">Send signal</button>
+                <button id="open-attributes" class="button button-secondary" type="button">Edit attributes</button>
                 <button id="request-cancel" class="button button-secondary" type="button">Request cancellation</button>
                 <button id="request-terminate" class="button button-danger" type="button">Terminate</button>
               </div>
             </header>
 
             <dl id="metadata" class="metadata-grid"></dl>
+            <div id="search-attributes" class="attribute-strip" aria-label="Search attributes"></div>
 
             <section id="operational-state" class="operational-state" aria-labelledby="operational-state-title">
               <span id="operational-state-icon" class="state-icon" aria-hidden="true"></span>
@@ -277,11 +279,39 @@
             <span>Workflow input <small>JSON</small></span>
             <textarea id="start-input" name="input" rows="8" spellcheck="false">{}</textarea>
           </label>
+          <label class="field field-wide">
+            <span>Search attributes <small>JSON object · optional</small></span>
+            <textarea id="start-attributes" name="search_attributes" rows="4" spellcheck="false">{}</textarea>
+            <small>Indexed business metadata for visibility, filtering, and operations.</small>
+          </label>
         </div>
         <p id="start-error" class="form-error" role="alert" hidden></p>
         <div class="dialog-footer">
           <button class="button button-secondary" type="button" data-close-dialog="start-dialog">Cancel</button>
           <button id="start-submit" class="button button-primary" type="submit">Start workflow</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="attributes-dialog" class="dialog">
+      <form id="attributes-form" novalidate>
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Indexed visibility</p>
+            <h2>Edit search attributes</h2>
+            <p>Replace the execution's searchable business metadata without changing replay history.</p>
+          </div>
+          <button class="dialog-close icon-button" type="button" data-close-dialog="attributes-dialog" aria-label="Close">×</button>
+        </div>
+        <label class="field">
+          <span>Search attributes <small>JSON object</small></span>
+          <textarea id="attributes-json" rows="12" spellcheck="false">{}</textarea>
+          <small>Maximum encoded size is 16 KB.</small>
+        </label>
+        <p id="attributes-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-footer">
+          <button class="button button-secondary" type="button" data-close-dialog="attributes-dialog">Cancel</button>
+          <button id="attributes-submit" class="button button-primary" type="submit">Save attributes</button>
         </div>
       </form>
     </dialog>
