@@ -41,6 +41,14 @@ uv run mypy
 uv run pytest
 ```
 
+Start PostgreSQL and apply the schema:
+
+```shell
+docker compose up -d postgres
+export DATABASE_URL=postgresql://durable:durable@localhost:5432/durable
+uv run python -m engine.persistence.migrations
+```
+
 ## Core guarantee
 
 For every accepted workflow transition, the resulting history events and

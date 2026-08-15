@@ -9,7 +9,7 @@ description = "A minimal durable execution engine built on deterministic replay.
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Santino Marial" }]
-dependencies = []
+dependencies = ["asyncpg>=0.30"]
 
 [dependency-groups]
 dev = [
@@ -26,6 +26,7 @@ packages = ["engine"]
 addopts = "--strict-config --strict-markers"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["integration: tests requiring a PostgreSQL instance"]
 
 [tool.ruff]
 line-length = 100
