@@ -62,3 +62,11 @@ def test_registry_reports_unknown_pinned_version() -> None:
 
     with pytest.raises(UnknownDefinitionError, match="unknown workflow 'sample' version 7"):
         registry.workflow("sample", 7)
+
+
+def test_registry_advertises_supported_versions_in_order() -> None:
+    registry = DefinitionRegistry()
+    registry.register_workflow(WorkflowDefinition.create(workflow_one, version=3, name="sample"))
+    registry.register_workflow(WorkflowDefinition.create(workflow_one, version=1, name="sample"))
+
+    assert registry.supported_workflow_versions("sample") == (1, 3)

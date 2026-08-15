@@ -137,6 +137,39 @@ async def reclaim_expired_workflow_tasks(pool: Pool, *, limit: int = 100) -> int
     return len(reclaimed)
 
 
+async def release_workflow_task(
+    pool: Pool,
+    *,
+    task: LeasedTask,
+    retry_delay: timedelta = timedelta(seconds=1),
+) -> None:
+    """Release a workflow lease after a worker-local routing failure."""
+    if task.task_type != "workflow":
+        raise ValueError("only workflow tasks can be released for version routing")
+    if retry_delay.total_seconds() < 0:
+        raise ValueError("retry_delay cannot be negative")
+    async with pool.acquire() as connection:
+        result = await connection.execute(
+            """
+            update tasks
+            set status = 'pending',
+                visible_at = now() + $3::interval,
+                leased_at = null,
+                lease_token = null,
+                lease_expires_at = null
+            where id = $1
+              and status = 'leased'
+              and lease_token = $2
+              and lease_expires_at > now()
+            """,
+            task.id,
+            task.lease_token,
+            retry_delay,
+        )
+    if result != "UPDATE 1":
+        raise StaleLeaseError(f"workflow task {task.id} does not hold a live lease")
+
+
 def _decode_json(value: object) -> JSONValue:
     if value is None:
         return None

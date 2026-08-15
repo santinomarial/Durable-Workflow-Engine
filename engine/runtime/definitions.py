@@ -107,3 +107,8 @@ class DefinitionRegistry:
             return self._activities[name]
         except KeyError as error:
             raise UnknownDefinitionError(f"unknown activity {name!r}") from error
+
+    def supported_workflow_versions(self, name: str) -> tuple[int, ...]:
+        return tuple(
+            sorted(version for workflow_name, version in self._workflows if workflow_name == name)
+        )

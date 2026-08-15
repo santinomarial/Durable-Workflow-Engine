@@ -9,8 +9,10 @@ from engine.persistence import (
     commit_workflow_replay,
     lease_task,
     load_workflow_replay_state,
+    release_workflow_task,
 )
 from engine.runtime import DefinitionRegistry, replay_workflow
+from engine.runtime.definitions import UnknownDefinitionError
 
 
 async def run_workflow_task(
@@ -30,7 +32,11 @@ async def run_workflow_task(
     if task is None:
         return False
     state = await load_workflow_replay_state(pool, task)
-    definition = registry.workflow(state.workflow_type, state.definition_version)
+    try:
+        definition = registry.workflow(state.workflow_type, state.definition_version)
+    except UnknownDefinitionError:
+        await release_workflow_task(pool, task=task)
+        raise
     replay = await replay_workflow(
         definition,
         workflow_id=state.workflow_id,

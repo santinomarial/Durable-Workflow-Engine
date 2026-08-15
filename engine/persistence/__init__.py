@@ -7,6 +7,7 @@ from engine.persistence.leasing import (
     heartbeat_activity,
     lease_task,
     reclaim_expired_workflow_tasks,
+    release_workflow_task,
     renew_lease,
 )
 from engine.persistence.signals import send_signal
@@ -40,6 +41,7 @@ __all__ = [
     "process_activity_timeout",
     "reclaim_expired_workflow_tasks",
     "register_workflow_definition",
+    "release_workflow_task",
     "renew_lease",
     "send_signal",
     "start_workflow",
