@@ -17,8 +17,7 @@ RUN uv sync --frozen --no-dev --no-editable
 FROM python:3.12.13-slim-bookworm AS runtime
 
 LABEL org.opencontainers.image.title="Durable Workflow Engine" \
-      org.opencontainers.image.source="https://github.com/santinomarial/Durable-Workflow-Engine" \
-      org.opencontainers.image.licenses="Apache-2.0"
+      org.opencontainers.image.source="https://github.com/santinomarial/Durable-Workflow-Engine"
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \

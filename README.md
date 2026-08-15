@@ -1,6 +1,7 @@
 # Durable Workflow Engine
 
 [![CI](https://github.com/santinomarial/Durable-Workflow-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/santinomarial/Durable-Workflow-Engine/actions/workflows/ci.yml)
+[![Security](https://github.com/santinomarial/Durable-Workflow-Engine/actions/workflows/security.yml/badge.svg)](https://github.com/santinomarial/Durable-Workflow-Engine/actions/workflows/security.yml)
 
 A compact Python/PostgreSQL engine that reconstructs durable workflows from an
 append-only event history and safely resumes them after process death.
@@ -27,8 +28,9 @@ It does not guarantee exactly-once arbitrary side effects. An activity can
 perform an external effect and die before recording completion. Exactly-once
 behavior exists only when that external boundary atomically deduplicates the
 engine-provided idempotency key. It also does not provide multi-region storage,
-sharding, authentication, multi-tenancy, child workflows, cron, search
-attributes, or automatic migration of running workflow code.
+sharding, multi-tenancy, child workflows, cron, search attributes, or automatic
+migration of running workflow code. The control-plane authentication described
+below protects API access; it is not tenant isolation.
 
 The central guarantee is:
 
@@ -90,6 +92,10 @@ configuration with viewer, operator, and administrator roles. See the
 The non-root container and hardened single-host reference topology are covered
 in the [deployment guide](docs/deployment.md); backup, restore drills, and
 history lifecycle constraints are covered in [data recovery](docs/backup-restore.md).
+Security reports and supported versions are covered by the
+[security policy](SECURITY.md). Operators should also review the
+[incident-response runbook](docs/incident-response.md), while maintainers can
+follow the [release procedure](docs/releasing.md).
 
 ## Replay model
 
@@ -225,7 +231,10 @@ and reproduction commands are in [the benchmark report](docs/benchmarks.md).
 ## Verification
 
 GitHub Actions runs formatting, lint, strict typing, unit tests, PostgreSQL
-integration tests, and the `SIGKILL` chaos profile against PostgreSQL 17.
+integration tests, the `SIGKILL` chaos profile against PostgreSQL 17, dependency
+auditing, CodeQL, secret and configuration scans, and container vulnerability
+scanning. Tagged releases produce checksums, a CycloneDX SBOM, and build
+provenance attestations.
 The runtime provides JSON request/worker logs, database-visible worker
 heartbeats, separate liveness/readiness probes, and authenticated Prometheus
 metrics; deployment guidance is in [production operations](docs/operations.md).
@@ -235,6 +244,11 @@ Locally:
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy
+uv run bandit --quiet --recursive engine
+uv run scripts/security-audit.sh
+node --check ui/app.js
+sh -n scripts/*.sh
+docker compose -f compose.production.yaml config --quiet
 export DWE_TEST_DATABASE_URL=postgresql://durable:durable@localhost:5432/durable
 uv run pytest
 ```

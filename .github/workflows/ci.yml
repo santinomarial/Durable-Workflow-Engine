@@ -21,7 +21,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install uv
-        run: python -m pip install uv
+        run: python -m pip install uv==0.11.2
       - name: Install locked dependencies
         run: uv sync --frozen --python 3.12 --all-groups
       - name: Check formatting
@@ -32,6 +32,14 @@ jobs:
         run: uv run mypy
       - name: Check operations console JavaScript
         run: node --check ui/app.js
+      - name: Check operational shell scripts
+        run: sh -n scripts/*.sh
+      - name: Validate production Compose topology
+        run: docker compose -f compose.production.yaml config --quiet
+      - name: Python security analysis
+        run: uv run bandit --quiet --recursive engine
+      - name: Locked dependency vulnerability audit
+        run: uv run scripts/security-audit.sh
       - name: Build wheel and source distribution
         run: uv build
       - name: Unit tests
@@ -62,7 +70,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install uv
-        run: python -m pip install uv
+        run: python -m pip install uv==0.11.2
       - name: Install locked dependencies
         run: uv sync --frozen --python 3.12 --all-groups
       - name: PostgreSQL integration and SIGKILL chaos tests

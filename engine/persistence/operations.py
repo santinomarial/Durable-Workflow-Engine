@@ -108,7 +108,8 @@ async def get_operational_gauges(pool: Pool, *, stale_after_seconds: int = 30) -
             """,
             stale_after_seconds,
         )
-    assert row is not None
+    if row is None:
+        raise RuntimeError("operational metrics query returned no row")
     return {
         "dwe_tasks_pending": float(cast(int, row["tasks_pending"])),
         "dwe_tasks_leased": float(cast(int, row["tasks_leased"])),

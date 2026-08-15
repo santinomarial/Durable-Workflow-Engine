@@ -53,7 +53,8 @@ async def replay_workflow(
 
     unvisited = index.first_unvisited_command(context.next_command_id)
     if unvisited is not None:
-        assert unvisited.command_id is not None
+        if unvisited.command_id is None:
+            raise NonDeterminismError(0, "unvisited command has no command ID")
         raise NonDeterminismError(
             unvisited.command_id,
             f"history contains unvisited {unvisited.event_type}",

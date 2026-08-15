@@ -16,6 +16,7 @@ venv/
 .env
 .env.*
 !.env.example
+secrets/
 
 # Editors and operating systems
 .DS_Store
@@ -25,3 +26,5 @@ venv/
 # Build artifacts
 build/
 dist/
+*.dump
+*.dump.sha256

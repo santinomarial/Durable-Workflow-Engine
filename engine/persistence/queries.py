@@ -124,7 +124,8 @@ async def get_execution_stats(pool: Pool) -> ExecutionStats:
             from workflow_executions
             """
         )
-    assert row is not None
+    if row is None:
+        raise RuntimeError("execution statistics query returned no row")
     return ExecutionStats(
         total=cast(int, row["total"]),
         running=cast(int, row["running"]),

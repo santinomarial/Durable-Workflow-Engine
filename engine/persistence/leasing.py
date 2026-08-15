@@ -294,7 +294,8 @@ async def lease_task(
             return None
 
         if task_type == "activity":
-            assert execution_seq is not None
+            if execution_seq is None:
+                raise RuntimeError("activity lease did not allocate a history sequence")
             attributes = canonical_json(
                 {
                     "attempt": cast(int, leased["attempt"]),

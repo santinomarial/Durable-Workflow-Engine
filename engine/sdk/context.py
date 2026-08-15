@@ -266,7 +266,8 @@ class WorkflowContext:
                 f"activity command changed (recorded {recorded_fingerprint!r}, "
                 f"replayed {command_fingerprint!r})",
             )
-        assert scheduled.entity_id is not None
+        if scheduled.entity_id is None:
+            raise NonDeterminismError(command_id, "recorded activity has no entity ID")
         terminal = self._history.activity_terminal.get(scheduled.entity_id)
         if terminal is None:
             raise _Blocked
@@ -330,7 +331,8 @@ class WorkflowContext:
                 f"timer command changed (recorded {recorded_fingerprint!r}, "
                 f"replayed {command_fingerprint!r})",
             )
-        assert scheduled.entity_id is not None
+        if scheduled.entity_id is None:
+            raise NonDeterminismError(command_id, "recorded timer has no entity ID")
         terminal = self._history.timer_terminal.get(scheduled.entity_id)
         if terminal is None:
             raise _Blocked
@@ -391,7 +393,8 @@ class WorkflowContext:
             )
         if scheduled.attributes.get("fingerprint") != command_fingerprint:
             raise NonDeterminismError(command_id, f"signal timeout for {name!r} changed")
-        assert scheduled.entity_id is not None
+        if scheduled.entity_id is None:
+            raise NonDeterminismError(command_id, "recorded signal timeout has no entity ID")
         timer_terminal = self._history.timer_terminal.get(scheduled.entity_id)
         if matching_signal is not None and (
             timer_terminal is None or matching_signal.seq < timer_terminal.seq

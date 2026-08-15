@@ -891,7 +891,8 @@ async def fail_activity(
     if not isinstance(max_attempts_value, int):
         raise TypeError("activity retry policy has invalid max_attempts")
     is_final = task.attempt >= max_attempts_value
-    selected_random = random.random() if random_value is None else random_value
+    # This is retry-delay jitter, not a security decision or identifier.
+    selected_random = random.random() if random_value is None else random_value  # nosec B311
     delay = (
         timedelta(0)
         if is_final

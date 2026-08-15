@@ -14,4 +14,7 @@ tests
 .env
 .env.*
 !.env.example
+secrets
+*.dump
+*.dump.sha256
 *.cast

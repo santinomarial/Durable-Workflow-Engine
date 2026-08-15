@@ -65,7 +65,8 @@ class DatabaseConfig:
         application_name: str = "durable-workflow-engine",
     ) -> DatabaseConfig:
         selected_url = url or secret_value("DATABASE_URL", required=True)
-        assert selected_url is not None
+        if selected_url is None:
+            raise RuntimeError("DATABASE_URL or DATABASE_URL_FILE is required")
         config = cls(
             url=selected_url,
             min_pool_size=positive_int("DWE_DB_POOL_MIN_SIZE", 2),

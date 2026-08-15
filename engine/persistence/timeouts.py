@@ -29,7 +29,8 @@ async def process_activity_timeout(
     random_value: float | None = None,
 ) -> bool:
     """Process at most one due activity timeout and report whether one was found."""
-    selected_random = random.random() if random_value is None else random_value
+    # This is retry-delay jitter, not a security decision or identifier.
+    selected_random = random.random() if random_value is None else random_value  # nosec B311
     async with pool.acquire() as connection, connection.transaction():
         task = await connection.fetchrow(
             """
