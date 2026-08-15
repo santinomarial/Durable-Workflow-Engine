@@ -30,6 +30,8 @@ jobs:
         run: uv run ruff check .
       - name: Type check
         run: uv run mypy
+      - name: Check operations console JavaScript
+        run: node --check ui/app.js
       - name: Build wheel and source distribution
         run: uv build
       - name: Unit tests

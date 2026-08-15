@@ -1,53 +1,333 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Durable Workflow Engine</title>
+    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#07111f">
+    <meta name="description" content="Operate and inspect durable workflow executions.">
+    <title>Durable · Workflow Operations</title>
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
-    <header>
-      <div>
-        <p class="eyebrow">Durable Workflow Engine</p>
-        <h1>Execution observatory</h1>
+    <a class="skip-link" href="#main-content">Skip to workflow operations</a>
+
+    <div id="global-progress" class="global-progress" role="progressbar" aria-label="Loading" hidden></div>
+
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Durable workflow operations home">
+        <span class="brand-mark" aria-hidden="true">D</span>
+        <span>
+          <strong>Durable</strong>
+          <small>Workflow operations</small>
+        </span>
+      </a>
+
+      <div class="topbar-actions">
+        <div id="health-pill" class="health-pill is-pending" role="status" aria-live="polite">
+          <span class="health-dot" aria-hidden="true"></span>
+          <span id="health-label">Checking engine</span>
+        </div>
+        <p id="last-updated" class="last-updated">Not yet updated</p>
+        <label class="live-control" for="live-toggle">
+          <span>Live</span>
+          <input id="live-toggle" type="checkbox" checked>
+          <span class="switch" aria-hidden="true"></span>
+        </label>
+        <button id="theme-toggle" class="icon-button" type="button" aria-label="Use light theme" title="Switch theme">
+          <span class="theme-icon" aria-hidden="true"></span>
+        </button>
+        <button id="open-start" class="button button-primary" type="button">
+          <span aria-hidden="true">＋</span>
+          New workflow
+        </button>
       </div>
-      <div class="health"><span id="health-dot"></span><span id="health">Connecting</span></div>
     </header>
-    <main>
-      <aside>
-        <div class="toolbar">
-          <select id="status-filter" aria-label="Status filter">
-            <option value="">All states</option>
-            <option value="running">Running</option>
-            <option value="completed">Completed</option>
-            <option value="failed">Failed</option>
-            <option value="terminated">Terminated</option>
-          </select>
-          <button id="refresh">Refresh</button>
+
+    <main id="main-content" class="app-shell">
+      <section class="overview" aria-labelledby="overview-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Operations overview</p>
+            <h1 id="overview-title">Execution fleet</h1>
+          </div>
+          <button id="refresh" class="button button-quiet" type="button" title="Refresh (R)">
+            <span class="refresh-icon" aria-hidden="true">↻</span>
+            Refresh
+          </button>
         </div>
-        <div id="execution-list" class="execution-list"></div>
-      </aside>
-      <section id="empty" class="empty"><p>Select an execution to inspect its durable history.</p></section>
-      <section id="detail" class="detail hidden">
-        <div class="summary">
-          <div><p class="label">Workflow</p><h2 id="workflow-type"></h2></div>
-          <span id="workflow-status" class="status"></span>
+
+        <div class="kpi-grid" aria-label="Workflow status totals">
+          <button class="kpi-card" type="button" data-status-filter="" aria-label="Show all executions">
+            <span class="kpi-label">Total executions</span>
+            <strong id="stat-total">—</strong>
+            <small>All recorded workflows</small>
+          </button>
+          <button class="kpi-card" type="button" data-status-filter="running" aria-label="Show running executions">
+            <span class="kpi-label"><span class="metric-dot running" aria-hidden="true"></span>Running</span>
+            <strong id="stat-running">—</strong>
+            <small>Active or waiting</small>
+          </button>
+          <button class="kpi-card" type="button" data-status-filter="completed" aria-label="Show completed executions">
+            <span class="kpi-label"><span class="metric-dot completed" aria-hidden="true"></span>Completed</span>
+            <strong id="stat-completed">—</strong>
+            <small>Finished successfully</small>
+          </button>
+          <button class="kpi-card attention" type="button" data-status-filter="attention" aria-label="Show failed and terminated executions">
+            <span class="kpi-label"><span class="metric-dot failed" aria-hidden="true"></span>Needs attention</span>
+            <strong id="stat-attention">—</strong>
+            <small id="stat-attention-detail">Failed or terminated</small>
+          </button>
         </div>
-        <dl id="metadata"></dl>
-        <div class="controls">
-          <input id="signal-name" placeholder="Signal name">
-          <textarea id="signal-payload" placeholder='Signal payload, e.g. {"ok": true}'></textarea>
-          <button id="send-signal">Send signal</button>
-          <button id="cancel">Request cancellation</button>
-          <button id="terminate" class="danger">Terminate</button>
-        </div>
-        <h3>Execution graph</h3>
-        <div id="graph" class="graph"></div>
-        <h3>Event history</h3>
-        <div id="history" class="history"></div>
+      </section>
+
+      <section class="workspace" aria-label="Workflow execution workspace">
+        <aside class="execution-panel" aria-labelledby="executions-title">
+          <div class="panel-heading">
+            <div>
+              <h2 id="executions-title">Executions</h2>
+              <p id="execution-count">Loading workflows…</p>
+            </div>
+          </div>
+
+          <div class="filters">
+            <label class="search-field" for="execution-search">
+              <span class="search-icon" aria-hidden="true"></span>
+              <span class="sr-only">Search executions</span>
+              <input id="execution-search" type="search" placeholder="Search type, ID, or queue" autocomplete="off">
+              <kbd>/</kbd>
+            </label>
+            <label class="select-field" for="status-filter">
+              <span class="sr-only">Filter by execution status</span>
+              <select id="status-filter">
+                <option value="">All states</option>
+                <option value="running">Running</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+                <option value="terminated">Terminated</option>
+                <option value="attention">Needs attention</option>
+              </select>
+            </label>
+          </div>
+
+          <div id="list-state" class="list-state" hidden></div>
+          <div id="execution-list" class="execution-list" role="listbox" aria-label="Workflow executions" tabindex="0"></div>
+        </aside>
+
+        <section class="detail-panel" aria-live="polite">
+          <div id="detail-empty" class="detail-empty">
+            <div class="empty-illustration" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </div>
+            <p class="eyebrow">Durable history</p>
+            <h2>Select an execution</h2>
+            <p>Inspect commands, retries, signals, timers, and every persisted transition.</p>
+            <p class="shortcut-hint"><kbd>↑</kbd><kbd>↓</kbd> to move through executions</p>
+          </div>
+
+          <div id="detail-loading" class="detail-loading" hidden aria-label="Loading execution details">
+            <div class="skeleton skeleton-title"></div>
+            <div class="skeleton skeleton-line"></div>
+            <div class="skeleton skeleton-block"></div>
+          </div>
+
+          <div id="detail-error" class="detail-error" hidden>
+            <span class="error-mark" aria-hidden="true">!</span>
+            <h2>Execution unavailable</h2>
+            <p id="detail-error-message"></p>
+            <button id="retry-detail" class="button button-secondary" type="button">Try again</button>
+          </div>
+
+          <article id="detail" class="detail" hidden>
+            <header class="detail-header">
+              <div class="detail-identity">
+                <div class="detail-title-row">
+                  <span id="workflow-status" class="status-badge"></span>
+                  <span id="workflow-version" class="version-badge"></span>
+                </div>
+                <h2 id="workflow-type"></h2>
+                <button id="copy-workflow-id" class="copy-id" type="button" title="Copy workflow ID">
+                  <code id="workflow-id"></code>
+                  <span aria-hidden="true">Copy</span>
+                </button>
+              </div>
+              <div class="detail-actions">
+                <button id="open-signal" class="button button-secondary" type="button">Send signal</button>
+                <button id="request-cancel" class="button button-secondary" type="button">Request cancellation</button>
+                <button id="request-terminate" class="button button-danger" type="button">Terminate</button>
+              </div>
+            </header>
+
+            <dl id="metadata" class="metadata-grid"></dl>
+
+            <section id="operational-state" class="operational-state" aria-labelledby="operational-state-title">
+              <span id="operational-state-icon" class="state-icon" aria-hidden="true"></span>
+              <div>
+                <p id="operational-state-label" class="eyebrow"></p>
+                <h3 id="operational-state-title"></h3>
+                <p id="operational-state-detail"></p>
+              </div>
+            </section>
+
+            <nav class="tabs" aria-label="Execution details" role="tablist">
+              <button id="tab-overview" class="tab is-active" type="button" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview">Overview</button>
+              <button id="tab-history" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-history" data-tab="history">History <span id="history-count" class="tab-count"></span></button>
+              <button id="tab-graph" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-graph" data-tab="graph">Graph</button>
+              <button id="tab-raw" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-raw" data-tab="raw">Raw</button>
+            </nav>
+
+            <div id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview">
+              <div class="content-heading">
+                <div>
+                  <h3>Activity attempts</h3>
+                  <p>Lifecycle and retry outcomes grouped by durable activity.</p>
+                </div>
+              </div>
+              <div id="activity-summary" class="activity-summary"></div>
+              <div class="table-scroller">
+                <table class="activity-table">
+                  <thead>
+                    <tr><th>Activity</th><th>Attempt</th><th>Outcome</th><th>Duration</th><th>Details</th></tr>
+                  </thead>
+                  <tbody id="activity-attempts"></tbody>
+                </table>
+              </div>
+              <div id="activity-empty" class="inline-empty" hidden>No activities have been scheduled for this execution.</div>
+            </div>
+
+            <div id="panel-history" class="tab-panel" role="tabpanel" aria-labelledby="tab-history" hidden>
+              <div class="history-toolbar">
+                <label class="search-field" for="history-search">
+                  <span class="search-icon" aria-hidden="true"></span>
+                  <span class="sr-only">Search event history</span>
+                  <input id="history-search" type="search" placeholder="Search events or attributes" autocomplete="off">
+                </label>
+                <label class="select-field" for="event-filter">
+                  <span class="sr-only">Filter event type</span>
+                  <select id="event-filter"><option value="">All event types</option></select>
+                </label>
+              </div>
+              <p id="history-results" class="result-count"></p>
+              <ol id="history" class="history-list"></ol>
+              <div id="history-empty" class="inline-empty" hidden>No events match these filters.</div>
+            </div>
+
+            <div id="panel-graph" class="tab-panel" role="tabpanel" aria-labelledby="tab-graph" hidden>
+              <div class="content-heading">
+                <div>
+                  <h3>Execution path</h3>
+                  <p>A compact view of persisted commands and external inputs.</p>
+                </div>
+                <div class="graph-legend" aria-label="Graph legend">
+                  <span><i class="legend-command"></i>Command</span>
+                  <span><i class="legend-input"></i>External input</span>
+                  <span><i class="legend-terminal"></i>Terminal</span>
+                </div>
+              </div>
+              <div id="graph" class="graph" role="list"></div>
+            </div>
+
+            <div id="panel-raw" class="tab-panel" role="tabpanel" aria-labelledby="tab-raw" hidden>
+              <div class="content-heading">
+                <div>
+                  <h3>Execution snapshot</h3>
+                  <p>Execution metadata and durable event history as JSON.</p>
+                </div>
+                <div class="raw-actions">
+                  <button id="copy-raw" class="button button-secondary" type="button">Copy JSON</button>
+                  <button id="download-raw" class="button button-secondary" type="button">Download</button>
+                </div>
+              </div>
+              <pre id="raw-json" class="raw-json" tabindex="0"></pre>
+            </div>
+          </article>
+        </section>
       </section>
     </main>
+
+    <dialog id="start-dialog" class="dialog">
+      <form id="start-form" novalidate>
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Create execution</p>
+            <h2>Start a workflow</h2>
+            <p>Inputs are recorded in durable history and replayed deterministically.</p>
+          </div>
+          <button class="dialog-close icon-button" type="button" data-close-dialog="start-dialog" aria-label="Close">×</button>
+        </div>
+        <div class="form-grid">
+          <label class="field field-wide">
+            <span>Workflow type</span>
+            <input id="start-type" name="workflow_type" required placeholder="OrderWorkflow" autocomplete="off">
+            <small>Must match a registered workflow definition.</small>
+          </label>
+          <label class="field">
+            <span>Definition version</span>
+            <input id="start-version" name="definition_version" type="number" value="1" min="1" step="1" required>
+          </label>
+          <label class="field">
+            <span>Task queue</span>
+            <input id="start-queue" name="queue_name" value="default" required autocomplete="off">
+          </label>
+          <label class="field field-wide">
+            <span>Workflow input <small>JSON</small></span>
+            <textarea id="start-input" name="input" rows="8" spellcheck="false">{}</textarea>
+          </label>
+        </div>
+        <p id="start-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-footer">
+          <button class="button button-secondary" type="button" data-close-dialog="start-dialog">Cancel</button>
+          <button id="start-submit" class="button button-primary" type="submit">Start workflow</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="signal-dialog" class="dialog">
+      <form id="signal-form" novalidate>
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">External input</p>
+            <h2>Send a signal</h2>
+            <p id="signal-target"></p>
+          </div>
+          <button class="dialog-close icon-button" type="button" data-close-dialog="signal-dialog" aria-label="Close">×</button>
+        </div>
+        <div class="form-grid">
+          <label class="field field-wide">
+            <span>Signal name</span>
+            <input id="signal-name" name="name" required placeholder="approval_received" autocomplete="off">
+          </label>
+          <label class="field field-wide">
+            <span>Payload <small>JSON</small></span>
+            <textarea id="signal-payload" name="payload" rows="7" spellcheck="false">{}</textarea>
+          </label>
+        </div>
+        <p id="signal-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-footer">
+          <button class="button button-secondary" type="button" data-close-dialog="signal-dialog">Cancel</button>
+          <button id="signal-submit" class="button button-primary" type="submit">Send signal</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="confirm-dialog" class="dialog dialog-compact">
+      <form id="confirm-form">
+        <div class="confirm-mark" aria-hidden="true">!</div>
+        <h2 id="confirm-title">Confirm action</h2>
+        <p id="confirm-description"></p>
+        <label class="field">
+          <span>Reason <small>optional</small></span>
+          <input id="confirm-reason" autocomplete="off" placeholder="Operator request">
+        </label>
+        <p id="confirm-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-footer">
+          <button class="button button-secondary" type="button" data-close-dialog="confirm-dialog">Go back</button>
+          <button id="confirm-submit" class="button button-danger" type="submit">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
     <script src="/static/app.js" defer></script>
   </body>
 </html>

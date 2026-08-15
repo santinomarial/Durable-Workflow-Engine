@@ -43,8 +43,17 @@ async def test_api_controls_and_inspects_workflow() -> None:
             assert health.headers["x-request-id"]
             page = await client.get("/")
             assert page.status_code == 200
-            assert "Execution observatory" in page.text
+            assert "Workflow operations" in page.text
+            assert "Execution fleet" in page.text
             assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
+            script = await client.get("/static/app.js")
+            assert script.status_code == 200
+            assert script.headers["content-type"].startswith("text/javascript")
+            assert script.headers["cache-control"] == "public, max-age=300, must-revalidate"
+            assert "innerHTML" not in script.text
+            stylesheet = await client.get("/static/styles.css")
+            assert stylesheet.status_code == 200
+            assert stylesheet.headers["content-type"].startswith("text/css")
 
             stats = await client.get("/api/stats")
             assert set(stats.json()) == {
