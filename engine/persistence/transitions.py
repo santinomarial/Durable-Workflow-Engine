@@ -186,6 +186,47 @@ async def start_workflow(
     return StartedWorkflow(execution_id, workflow_type, definition_version)
 
 
+async def _cancel_pending_timers(
+    connection: Connection,
+    *,
+    workflow_id: UUID,
+    next_seq: int,
+    reason: str,
+) -> int:
+    timers = await connection.fetch(
+        """
+        select id, entity_id
+        from tasks
+        where workflow_id = $1 and task_type = 'timer' and status = 'pending'
+        order by command_id, id
+        """,
+        workflow_id,
+    )
+    for timer in timers:
+        canceled = await connection.execute(
+            """
+            update tasks set status = 'dead', completed_at = now()
+            where id = $1 and status = 'pending'
+            """,
+            timer["id"],
+        )
+        if canceled != "UPDATE 1":
+            continue
+        await connection.execute(
+            """
+            insert into history_events (
+              workflow_id, seq, event_type, entity_id, attributes
+            ) values ($1, $2, 'TimerCanceled', $3, $4::jsonb)
+            """,
+            workflow_id,
+            next_seq,
+            timer["entity_id"],
+            canonical_json({"reason": reason}),
+        )
+        next_seq += 1
+    return next_seq
+
+
 async def terminate_workflow(
     pool: Pool,
     *,
@@ -205,6 +246,12 @@ async def terminate_workflow(
         if execution["status"] != "running":
             raise TerminalWorkflowError(f"workflow {workflow_id} is {execution['status']}")
         next_seq = cast(int, execution["next_seq"])
+        next_seq = await _cancel_pending_timers(
+            connection,
+            workflow_id=workflow_id,
+            next_seq=next_seq,
+            reason="workflow terminated",
+        )
         await connection.execute(
             """
             insert into history_events (workflow_id, seq, event_type, attributes)
@@ -278,7 +325,7 @@ async def request_workflow_cancellation(
             """
             update tasks set status = 'dead', completed_at = now()
             where workflow_id = $1
-              and task_type in ('activity', 'timer')
+              and task_type = 'activity'
               and status = 'pending'
             """,
             workflow_id,
@@ -532,6 +579,12 @@ async def commit_workflow_replay(
             ReplayStatus.COMMANDS,
             ReplayStatus.BLOCKED,
         ):
+            next_seq = await _cancel_pending_timers(
+                connection,
+                workflow_id=task.workflow_id,
+                next_seq=next_seq,
+                reason="workflow cancellation requested",
+            )
             await connection.execute(
                 """
                 insert into history_events (workflow_id, seq, event_type, attributes)
@@ -612,6 +665,12 @@ async def commit_workflow_replay(
             completed = replay.status is ReplayStatus.COMPLETED
             event_type = "WorkflowExecutionCompleted" if completed else "WorkflowExecutionFailed"
             payload = replay.result if completed else replay.failure
+            next_seq = await _cancel_pending_timers(
+                connection,
+                workflow_id=task.workflow_id,
+                next_seq=next_seq,
+                reason="workflow closed",
+            )
             await connection.execute(
                 """
                 insert into history_events (workflow_id, seq, event_type, attributes)

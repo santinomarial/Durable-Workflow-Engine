@@ -22,6 +22,7 @@ async def fire_due_timer(pool: Pool, *, queue_name: str | None = None) -> bool:
               and t.status = 'pending'
               and t.visible_at <= now()
               and e.status = 'running'
+              and e.cancellation_requested_at is null
               and ($1::text is null or t.queue_name = $1)
             order by t.visible_at, t.id
             for update of t skip locked

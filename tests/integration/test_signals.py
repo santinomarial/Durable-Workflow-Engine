@@ -175,3 +175,49 @@ async def test_signal_timeout_race_uses_committed_event_order(signal_wins: bool)
         )
     finally:
         await pool.close()
+
+
+async def test_signal_completion_records_cancellation_of_unneeded_timeout() -> None:
+    assert DATABASE_URL is not None
+    await migrate(DATABASE_URL)
+    registry = DefinitionRegistry()
+    registry.register_workflow(signal_timeout_race)
+    pool = await create_pool(DATABASE_URL)
+    queue_name = "signal-cancels-timeout-queue"
+    try:
+        await register_workflow_definition(pool, signal_timeout_race)
+        started = await start_workflow(
+            pool,
+            workflow_type=signal_timeout_race.name,
+            definition_version=1,
+            workflow_input=None,
+            queue_name=queue_name,
+        )
+        assert await run_workflow_task(pool, registry, queue_name=queue_name)
+        assert await send_signal(
+            pool,
+            workflow_id=started.workflow_id,
+            signal_id="early-signal",
+            name="decision",
+            payload="accepted",
+        )
+        assert await run_workflow_task(pool, registry, queue_name=queue_name)
+        assert not await fire_due_timer(pool, queue_name=queue_name)
+
+        async with pool.acquire() as connection:
+            event_types = await connection.fetch(
+                """
+                select event_type from history_events
+                where workflow_id = $1 order by seq
+                """,
+                started.workflow_id,
+            )
+        assert [event["event_type"] for event in event_types] == [
+            "WorkflowExecutionStarted",
+            "TimerStarted",
+            "SignalReceived",
+            "TimerCanceled",
+            "WorkflowExecutionCompleted",
+        ]
+    finally:
+        await pool.close()
