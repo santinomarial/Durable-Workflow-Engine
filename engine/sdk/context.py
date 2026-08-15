@@ -1,0 +1,116 @@
+"""Deterministic operations available to workflow code."""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from uuid import UUID, uuid5
+
+from engine.runtime.commands import ScheduleActivity
+from engine.runtime.definitions import ActivityDefinition
+from engine.runtime.history import HistoryIndex
+from engine.runtime.serialization import JSONValue, clone_json, fingerprint
+from engine.sdk.policies import RetryPolicy
+
+ENTITY_NAMESPACE = UUID("590db7c2-1131-489a-a2b5-a94c2e5bc424")
+
+
+class NonDeterminismError(RuntimeError):
+    """Raised when workflow code diverges from its committed command history."""
+
+    def __init__(self, command_id: int, detail: str) -> None:
+        self.command_id = command_id
+        self.detail = detail
+        super().__init__(f"non-determinism at command {command_id}: {detail}")
+
+
+class ActivityError(RuntimeError):
+    def __init__(self, activity_type: str, failure: JSONValue) -> None:
+        self.activity_type = activity_type
+        self.failure = failure
+        super().__init__(f"activity {activity_type!r} failed: {failure!r}")
+
+
+class _ReplaySuspended(BaseException):
+    pass
+
+
+class _NewCommand(_ReplaySuspended):
+    def __init__(self, command: ScheduleActivity) -> None:
+        self.command = command
+
+
+class _Blocked(_ReplaySuspended):
+    pass
+
+
+class WorkflowContext:
+    def __init__(self, workflow_id: UUID, history: HistoryIndex) -> None:
+        self._workflow_id = workflow_id
+        self._history = history
+        self._next_command_id = 0
+
+    @property
+    def next_command_id(self) -> int:
+        return self._next_command_id
+
+    async def activity(
+        self,
+        definition: ActivityDefinition,
+        *args: JSONValue,
+        retry: RetryPolicy | None = None,
+        start_to_close: timedelta | None = None,
+        **kwargs: JSONValue,
+    ) -> JSONValue:
+        command_id = self._next_command_id
+        self._next_command_id += 1
+        policy = retry or RetryPolicy()
+        command_input: dict[str, JSONValue] = {
+            "args": clone_json(list(args)),
+            "kwargs": clone_json(kwargs),
+        }
+        start_to_close_seconds = (
+            start_to_close.total_seconds() if start_to_close is not None else None
+        )
+        if start_to_close_seconds is not None and start_to_close_seconds <= 0:
+            raise ValueError("start_to_close must be positive")
+        identity: dict[str, JSONValue] = {
+            "command_type": "activity",
+            "activity_type": definition.name,
+            "input": command_input,
+            "retry_policy": policy.to_json(),
+            "start_to_close_seconds": start_to_close_seconds,
+        }
+        command_fingerprint = fingerprint(identity)
+        scheduled = self._history.scheduled.get(command_id)
+        if scheduled is None:
+            entity_id = uuid5(ENTITY_NAMESPACE, f"{self._workflow_id}:activity:{command_id}")
+            raise _NewCommand(
+                ScheduleActivity(
+                    command_id=command_id,
+                    entity_id=entity_id,
+                    activity_type=definition.name,
+                    input=command_input,
+                    retry_policy=policy.to_json(),
+                    start_to_close_seconds=start_to_close_seconds,
+                    fingerprint=command_fingerprint,
+                )
+            )
+        if scheduled.event_type != "ActivityScheduled":
+            raise NonDeterminismError(
+                command_id,
+                f"expected activity, history contains {scheduled.event_type}",
+            )
+        recorded_fingerprint = scheduled.attributes.get("fingerprint")
+        if recorded_fingerprint != command_fingerprint:
+            raise NonDeterminismError(
+                command_id,
+                f"activity command changed (recorded {recorded_fingerprint!r}, "
+                f"replayed {command_fingerprint!r})",
+            )
+        assert scheduled.entity_id is not None
+        terminal = self._history.activity_terminal.get(scheduled.entity_id)
+        if terminal is None:
+            raise _Blocked
+        if terminal.event_type == "ActivityCompleted":
+            return clone_json(terminal.attributes.get("result"))
+        raise ActivityError(definition.name, clone_json(terminal.attributes.get("failure")))
