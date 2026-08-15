@@ -1,0 +1,81 @@
+{
+  "metadata": {
+    "cpu_count": 10,
+    "machine": "arm64",
+    "platform": "macOS-26.6.1-arm64-arm-64bit",
+    "processor": "arm",
+    "profile": "quick",
+    "python": "3.12.13",
+    "timestamp_utc": "2026-08-15T16:38:41Z"
+  },
+  "postgres": {
+    "activity_dispatch_call_ms": {
+      "p50": 0.4445419763214886,
+      "p95": 0.48341602087020874,
+      "p99": 0.4980000085197389
+    },
+    "append_transition_ms_by_history_size": {
+      "10": 0.5935829831287265,
+      "1000": 0.4515839973464608,
+      "100000": 0.8450419991277158
+    },
+    "dispatch_ms_by_pending_depth": {
+      "100": {
+        "p50": 0.4237499670125544,
+        "p95": 0.5822500097565353,
+        "p99": 0.6319170352071524
+      },
+      "1000": {
+        "p50": 1.0125000262632966,
+        "p95": 1.319957955274731,
+        "p99": 1.5027920017018914
+      }
+    },
+    "expired_lease_recovery_ms": 0.723874953109771,
+    "first_failure_point": null,
+    "largest_pending_depth_tested": 1000,
+    "leases_per_second_by_concurrent_pollers": {
+      "1": 1218.4008513154972,
+      "16": 9594.962742477372,
+      "4": 2963.598704436056
+    },
+    "postgres_settings": {
+      "max_connections": "100",
+      "shared_buffers": "128MB",
+      "synchronous_commit": "on",
+      "wal_level": "replica"
+    },
+    "postgres_version": "15.17 (Homebrew)",
+    "timer_fire_delay_ms": {
+      "p50": 0.952,
+      "p95": 1.025,
+      "p99": 1.025
+    },
+    "workflow_dispatch_call_ms": {
+      "p50": 0.331540999468416,
+      "p95": 0.500582973472774,
+      "p99": 0.5423339898698032
+    },
+    "workflow_starts_per_second": 3678.47102874859
+  },
+  "replay": {
+    "10": {
+      "events_per_second": 261721.88081661504,
+      "median_seconds": 3.8208498153835535e-05,
+      "samples": 2,
+      "warmup_samples": 1
+    },
+    "1000": {
+      "events_per_second": 248931.64778277045,
+      "median_seconds": 0.004017166997073218,
+      "samples": 2,
+      "warmup_samples": 1
+    },
+    "100000": {
+      "events_per_second": 236215.16002432996,
+      "median_seconds": 0.42334285398828797,
+      "samples": 2,
+      "warmup_samples": 1
+    }
+  }
+}
