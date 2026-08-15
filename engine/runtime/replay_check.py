@@ -37,7 +37,7 @@ async def replay_check(
     async with pool.acquire() as connection:
         execution = await connection.fetchrow(
             """
-            select workflow_type, definition_version, input
+            select workflow_type, definition_version, input, status, result, failure
             from workflow_executions where id = $1
             """,
             workflow_id,
@@ -83,6 +83,47 @@ async def replay_check(
             divergence_command_id=error.command_id,
             message=error.detail,
         )
+    stored_status = str(execution["status"])
+    expected_status = {
+        "completed": ReplayStatus.COMPLETED,
+        "failed": ReplayStatus.FAILED,
+    }.get(stored_status)
+    if expected_status is not None and replay.status is not expected_status:
+        return ReplayCheckReport(
+            workflow_id,
+            workflow_type,
+            stored_version,
+            definition.version,
+            False,
+            replay.status,
+            message=(
+                f"stored workflow is {stored_status}, but replay produced {replay.status.value}"
+            ),
+        )
+    if stored_status == "completed":
+        stored_result = cast(JSONValue, json.loads(cast(str, execution["result"])))
+        if replay.result != stored_result:
+            return ReplayCheckReport(
+                workflow_id,
+                workflow_type,
+                stored_version,
+                definition.version,
+                False,
+                replay.status,
+                message="replayed result differs from the stored terminal result",
+            )
+    if stored_status == "failed":
+        stored_failure = cast(JSONValue, json.loads(cast(str, execution["failure"])))
+        if replay.failure != stored_failure:
+            return ReplayCheckReport(
+                workflow_id,
+                workflow_type,
+                stored_version,
+                definition.version,
+                False,
+                replay.status,
+                message="replayed failure differs from the stored terminal failure",
+            )
     return ReplayCheckReport(
         workflow_id,
         workflow_type,

@@ -42,6 +42,18 @@ async def incompatible_v2(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
     return await ctx.activity(checked_activity, {"changed": value})
 
 
+@workflow(version=1, name="terminal-result-check")
+async def terminal_result_v1(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    del ctx
+    return {"value": value}
+
+
+@workflow(version=2, name="terminal-result-check")
+async def changed_terminal_result_v2(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    del ctx
+    return {"changed": value}
+
+
 async def test_replay_check_reports_first_divergence_without_mutation() -> None:
     assert DATABASE_URL is not None
     await migrate(DATABASE_URL)
@@ -95,5 +107,40 @@ async def test_replay_check_reports_first_divergence_without_mutation() -> None:
             )
         assert after == before
         assert await lease_task(pool, task_type="activity", queue_name="replay-check-queue")
+    finally:
+        await pool.close()
+
+
+async def test_replay_check_rejects_changed_terminal_result_without_commands() -> None:
+    assert DATABASE_URL is not None
+    await migrate(DATABASE_URL)
+    pool = await create_pool(DATABASE_URL)
+    registry = DefinitionRegistry()
+    registry.register_workflow(terminal_result_v1)
+    try:
+        await register_workflow_definition(pool, terminal_result_v1)
+        started = await start_workflow(
+            pool,
+            workflow_type=terminal_result_v1.name,
+            definition_version=1,
+            workflow_input="original",
+            queue_name="terminal-replay-check",
+        )
+        assert await run_workflow_task(pool, registry, queue_name="terminal-replay-check")
+
+        compatible = await replay_check(
+            pool, workflow_id=started.workflow_id, definition=terminal_result_v1
+        )
+        changed = await replay_check(
+            pool,
+            workflow_id=started.workflow_id,
+            definition=changed_terminal_result_v2,
+        )
+
+        assert compatible.compatible is True
+        assert changed.compatible is False
+        assert changed.replay_status is ReplayStatus.COMPLETED
+        assert changed.divergence_command_id is None
+        assert changed.message == "replayed result differs from the stored terminal result"
     finally:
         await pool.close()
