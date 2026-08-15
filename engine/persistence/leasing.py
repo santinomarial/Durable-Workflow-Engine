@@ -14,6 +14,10 @@ from engine.runtime.serialization import JSONValue, canonical_json
 TASK_TYPES = frozenset({"workflow", "activity", "timer"})
 
 
+class StaleLeaseError(RuntimeError):
+    """Raised when a task no longer owns a live lease token."""
+
+
 @dataclass(frozen=True, slots=True)
 class LeasedTask:
     id: UUID
@@ -28,6 +32,72 @@ class LeasedTask:
     leased_at: datetime
     lease_expires_at: datetime
     start_to_close_deadline: datetime | None
+
+
+async def renew_lease(
+    pool: Pool,
+    *,
+    task_id: UUID,
+    lease_token: UUID,
+    lease_duration: timedelta = timedelta(seconds=30),
+) -> datetime:
+    """Renew a live lease without allowing an expired owner to resurrect itself."""
+    if lease_duration.total_seconds() <= 0:
+        raise ValueError("lease_duration must be positive")
+    async with pool.acquire() as connection:
+        expires_at = await connection.fetchval(
+            """
+            update tasks
+            set lease_expires_at = now() + $3::interval
+            where id = $1
+              and status = 'leased'
+              and lease_token = $2
+              and lease_expires_at > now()
+            returning lease_expires_at
+            """,
+            task_id,
+            lease_token,
+            lease_duration,
+        )
+    if expires_at is None:
+        raise StaleLeaseError(f"task {task_id} does not hold a live lease")
+    return cast(datetime, expires_at)
+
+
+async def heartbeat_activity(
+    pool: Pool,
+    *,
+    task_id: UUID,
+    lease_token: UUID,
+    details: JSONValue = None,
+    lease_duration: timedelta = timedelta(seconds=30),
+) -> datetime:
+    """Record activity progress and renew its lease, but never its execution timeout."""
+    if lease_duration.total_seconds() <= 0:
+        raise ValueError("lease_duration must be positive")
+    encoded_details = canonical_json(details)
+    async with pool.acquire() as connection:
+        expires_at = await connection.fetchval(
+            """
+            update tasks
+            set heartbeat_at = now(),
+                heartbeat_details = $3::jsonb,
+                lease_expires_at = now() + $4::interval
+            where id = $1
+              and task_type = 'activity'
+              and status = 'leased'
+              and lease_token = $2
+              and lease_expires_at > now()
+            returning lease_expires_at
+            """,
+            task_id,
+            lease_token,
+            encoded_details,
+            lease_duration,
+        )
+    if expires_at is None:
+        raise StaleLeaseError(f"activity task {task_id} does not hold a live lease")
+    return cast(datetime, expires_at)
 
 
 def _decode_json(value: object) -> JSONValue:

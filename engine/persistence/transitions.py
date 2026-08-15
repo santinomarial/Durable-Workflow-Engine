@@ -12,7 +12,7 @@ from typing import cast
 from uuid import UUID, uuid4
 
 from engine.persistence.database import Connection, Pool
-from engine.persistence.leasing import LeasedTask
+from engine.persistence.leasing import LeasedTask, StaleLeaseError
 from engine.runtime.commands import ScheduleActivity
 from engine.runtime.definitions import WorkflowDefinition
 from engine.runtime.history import HistoryEvent
@@ -30,10 +30,6 @@ class DefinitionNotRegisteredError(TransitionError):
 
 class StoredDefinitionConflictError(TransitionError):
     """Raised when stored and worker definition hashes disagree."""
-
-
-class StaleLeaseError(TransitionError):
-    """Raised when a task transition does not own the current lease token."""
 
 
 class TerminalWorkflowError(TransitionError):

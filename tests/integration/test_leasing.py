@@ -6,9 +6,12 @@ from uuid import uuid4
 import pytest
 
 from engine.persistence import (
+    StaleLeaseError,
     create_pool,
+    heartbeat_activity,
     lease_task,
     register_workflow_definition,
+    renew_lease,
     start_workflow,
 )
 from engine.persistence.migrations import migrate
@@ -65,6 +68,20 @@ async def test_workflow_task_lease_is_exclusive_and_does_not_append_history() ->
         assert leased.lease_expires_at > leased.leased_at
         assert duplicate is None
 
+        renewed_until = await renew_lease(
+            pool,
+            task_id=leased.id,
+            lease_token=leased.lease_token,
+            lease_duration=timedelta(seconds=30),
+        )
+        assert renewed_until > leased.lease_expires_at
+        with pytest.raises(StaleLeaseError, match="does not hold a live lease"):
+            await renew_lease(
+                pool,
+                task_id=leased.id,
+                lease_token=uuid4(),
+            )
+
         async with pool.acquire() as connection:
             event_types = await connection.fetch(
                 """
@@ -113,9 +130,9 @@ async def test_activity_lease_appends_started_event_in_same_transition() -> None
                 """
                 insert into tasks (
                   id, workflow_id, task_type, queue_name, entity_id, command_id,
-                  input, start_to_close_timeout
+                  input, start_to_close_timeout, heartbeat_timeout
                 ) values ($1, $2, 'activity', 'lease-activity-queue', $3, 0,
-                          '{}'::jsonb, interval '20 seconds')
+                          '{}'::jsonb, interval '20 seconds', interval '5 seconds')
                 """,
                 uuid4(),
                 started.workflow_id,
@@ -133,6 +150,15 @@ async def test_activity_lease_appends_started_event_in_same_transition() -> None
         assert leased.entity_id == entity_id
         assert leased.start_to_close_deadline is not None
         assert leased.start_to_close_deadline > leased.lease_expires_at
+        original_execution_deadline = leased.start_to_close_deadline
+        heartbeat_expiry = await heartbeat_activity(
+            pool,
+            task_id=leased.id,
+            lease_token=leased.lease_token,
+            details={"processed": 12},
+            lease_duration=timedelta(seconds=15),
+        )
+        assert heartbeat_expiry > leased.lease_expires_at
         async with pool.acquire() as connection:
             execution_seq = await connection.fetchval(
                 "select next_seq from workflow_executions where id = $1", started.workflow_id
@@ -144,10 +170,34 @@ async def test_activity_lease_appends_started_event_in_same_transition() -> None
                 """,
                 started.workflow_id,
             )
+            heartbeat = await connection.fetchrow(
+                """
+                select heartbeat_at, heartbeat_details, start_to_close_deadline
+                from tasks where id = $1
+                """,
+                leased.id,
+            )
         assert execution_seq == 4
         assert started_event is not None
         assert started_event["seq"] == 3
         assert started_event["entity_id"] == entity_id
         assert json.loads(started_event["attributes"])["attempt"] == 1
+        assert heartbeat is not None
+        assert heartbeat["heartbeat_at"] is not None
+        assert json.loads(heartbeat["heartbeat_details"]) == {"processed": 12}
+        assert heartbeat["start_to_close_deadline"] == original_execution_deadline
+
+        async with pool.acquire() as connection:
+            await connection.execute(
+                "update tasks set lease_expires_at = now() - interval '1 second' where id = $1",
+                leased.id,
+            )
+        with pytest.raises(StaleLeaseError, match="does not hold a live lease"):
+            await heartbeat_activity(
+                pool,
+                task_id=leased.id,
+                lease_token=leased.lease_token,
+                details={"too_late": True},
+            )
     finally:
         await pool.close()
