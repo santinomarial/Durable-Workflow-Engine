@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Durable Workflow Engine</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header>
+      <div>
+        <p class="eyebrow">Durable Workflow Engine</p>
+        <h1>Execution observatory</h1>
+      </div>
+      <div class="health"><span id="health-dot"></span><span id="health">Connecting</span></div>
+    </header>
+    <main>
+      <aside>
+        <div class="toolbar">
+          <select id="status-filter" aria-label="Status filter">
+            <option value="">All states</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="terminated">Terminated</option>
+          </select>
+          <button id="refresh">Refresh</button>
+        </div>
+        <div id="execution-list" class="execution-list"></div>
+      </aside>
+      <section id="empty" class="empty"><p>Select an execution to inspect its durable history.</p></section>
+      <section id="detail" class="detail hidden">
+        <div class="summary">
+          <div><p class="label">Workflow</p><h2 id="workflow-type"></h2></div>
+          <span id="workflow-status" class="status"></span>
+        </div>
+        <dl id="metadata"></dl>
+        <div class="controls">
+          <input id="signal-name" placeholder="Signal name">
+          <textarea id="signal-payload" placeholder='Signal payload, e.g. {"ok": true}'></textarea>
+          <button id="send-signal">Send signal</button>
+          <button id="terminate" class="danger">Terminate</button>
+        </div>
+        <h3>Execution graph</h3>
+        <div id="graph" class="graph"></div>
+        <h3>Event history</h3>
+        <div id="history" class="history"></div>
+      </section>
+    </main>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

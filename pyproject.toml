@@ -9,7 +9,11 @@ description = "A minimal durable execution engine built on deterministic replay.
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Santino Marial" }]
-dependencies = ["asyncpg>=0.30"]
+dependencies = [
+  "asyncpg>=0.30",
+  "fastapi>=0.115",
+  "uvicorn>=0.34",
+]
 
 [project.scripts]
 engine = "engine.cli:main"
@@ -17,6 +21,7 @@ engine = "engine.cli:main"
 [dependency-groups]
 dev = [
   "mypy>=1.17",
+  "httpx>=0.28",
   "pytest>=8.4",
   "pytest-asyncio>=1.1",
   "ruff>=0.12",

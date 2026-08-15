@@ -49,6 +49,16 @@ export DATABASE_URL=postgresql://durable:durable@localhost:5432/durable
 uv run python -m engine.persistence.migrations
 ```
 
+Start the API and observability UI:
+
+```shell
+uv run uvicorn engine.api.app:app --reload
+```
+
+Open `http://127.0.0.1:8000` to list executions, inspect event histories and
+activity attempts, view the command/entity graph, send signals, and terminate
+running workflows. Interactive API documentation is available at `/docs`.
+
 ## Core guarantee
 
 For every accepted workflow transition, the resulting history events and
