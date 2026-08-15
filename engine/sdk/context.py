@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from uuid import UUID, uuid5
 
-from engine.runtime.commands import ScheduleActivity
+from engine.runtime.commands import Command, ScheduleActivity, ScheduleTimer
 from engine.runtime.definitions import ActivityDefinition
 from engine.runtime.history import HistoryIndex
 from engine.runtime.serialization import JSONValue, clone_json, fingerprint
@@ -35,7 +35,7 @@ class _ReplaySuspended(BaseException):
 
 
 class _NewCommand(_ReplaySuspended):
-    def __init__(self, command: ScheduleActivity) -> None:
+    def __init__(self, command: Command) -> None:
         self.command = command
 
 
@@ -131,3 +131,40 @@ class WorkflowContext:
         if terminal.event_type == "ActivityCompleted":
             return clone_json(terminal.attributes.get("result"))
         raise ActivityError(definition.name, clone_json(terminal.attributes.get("failure")))
+
+    async def sleep(self, duration: timedelta) -> None:
+        command_id = self._next_command_id
+        self._next_command_id += 1
+        delay_seconds = duration.total_seconds()
+        if delay_seconds < 0:
+            raise ValueError("sleep duration cannot be negative")
+        command_fingerprint = fingerprint({"command_type": "timer", "delay_seconds": delay_seconds})
+        scheduled = self._history.scheduled.get(command_id)
+        if scheduled is None:
+            entity_id = uuid5(ENTITY_NAMESPACE, f"{self._workflow_id}:timer:{command_id}")
+            raise _NewCommand(
+                ScheduleTimer(
+                    command_id=command_id,
+                    entity_id=entity_id,
+                    delay_seconds=delay_seconds,
+                    fingerprint=command_fingerprint,
+                )
+            )
+        if scheduled.event_type != "TimerStarted":
+            raise NonDeterminismError(
+                command_id,
+                f"expected timer, history contains {scheduled.event_type}",
+            )
+        recorded_fingerprint = scheduled.attributes.get("fingerprint")
+        if recorded_fingerprint != command_fingerprint:
+            raise NonDeterminismError(
+                command_id,
+                f"timer command changed (recorded {recorded_fingerprint!r}, "
+                f"replayed {command_fingerprint!r})",
+            )
+        assert scheduled.entity_id is not None
+        terminal = self._history.timer_terminal.get(scheduled.entity_id)
+        if terminal is None:
+            raise _Blocked
+        if terminal.event_type == "TimerCanceled":
+            raise RuntimeError("timer was canceled")

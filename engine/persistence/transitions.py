@@ -15,7 +15,7 @@ from uuid import UUID, uuid4
 
 from engine.persistence.database import Connection, Pool
 from engine.persistence.leasing import LeasedTask, StaleLeaseError
-from engine.runtime.commands import ScheduleActivity
+from engine.runtime.commands import ScheduleActivity, ScheduleTimer
 from engine.runtime.definitions import WorkflowDefinition
 from engine.runtime.history import HistoryEvent
 from engine.runtime.replay import ReplayResult, ReplayStatus
@@ -297,6 +297,48 @@ async def _append_activity_command(
     )
 
 
+async def _append_timer_command(
+    connection: Connection,
+    *,
+    workflow_id: UUID,
+    seq: int,
+    command: ScheduleTimer,
+    queue_name: str,
+) -> None:
+    await connection.execute(
+        """
+        insert into history_events (
+          workflow_id, seq, event_type, command_id, entity_id, attributes
+        ) values ($1, $2, 'TimerStarted', $3, $4, $5::jsonb)
+        """,
+        workflow_id,
+        seq,
+        command.command_id,
+        command.entity_id,
+        canonical_json(
+            {"delay_seconds": command.delay_seconds, "fingerprint": command.fingerprint}
+        ),
+    )
+    await connection.execute(
+        """
+        insert into tasks (
+          id, workflow_id, task_type, queue_name, entity_id, command_id,
+          input, visible_at
+        ) values (
+          $1, $2, 'timer', $3, $4, $5, $6::jsonb,
+          now() + $7::double precision * interval '1 second'
+        )
+        """,
+        uuid4(),
+        workflow_id,
+        queue_name,
+        command.entity_id,
+        command.command_id,
+        canonical_json({"delay_seconds": command.delay_seconds}),
+        command.delay_seconds,
+    )
+
+
 async def commit_workflow_replay(
     pool: Pool,
     *,
@@ -339,13 +381,22 @@ async def commit_workflow_replay(
             if not replay.commands:
                 raise TransitionError("commands replay result contains no commands")
             for command in replay.commands:
-                await _append_activity_command(
-                    connection,
-                    workflow_id=task.workflow_id,
-                    seq=next_seq,
-                    command=command,
-                    queue_name=cast(str, locked_task["queue_name"]),
-                )
+                if isinstance(command, ScheduleActivity):
+                    await _append_activity_command(
+                        connection,
+                        workflow_id=task.workflow_id,
+                        seq=next_seq,
+                        command=command,
+                        queue_name=cast(str, locked_task["queue_name"]),
+                    )
+                elif isinstance(command, ScheduleTimer):
+                    await _append_timer_command(
+                        connection,
+                        workflow_id=task.workflow_id,
+                        seq=next_seq,
+                        command=command,
+                        queue_name=cast(str, locked_task["queue_name"]),
+                    )
                 next_seq += 1
             await connection.execute(
                 "update workflow_executions set next_seq = $2 where id = $1",

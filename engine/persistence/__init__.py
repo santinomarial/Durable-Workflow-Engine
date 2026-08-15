@@ -10,6 +10,7 @@ from engine.persistence.leasing import (
     renew_lease,
 )
 from engine.persistence.timeouts import process_activity_timeout
+from engine.persistence.timers import fire_due_timer
 from engine.persistence.transitions import (
     StartedWorkflow,
     WorkflowReplayState,
@@ -31,6 +32,7 @@ __all__ = [
     "complete_activity",
     "create_pool",
     "fail_activity",
+    "fire_due_timer",
     "heartbeat_activity",
     "lease_task",
     "load_workflow_replay_state",

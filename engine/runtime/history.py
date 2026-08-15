@@ -11,6 +11,7 @@ SCHEDULE_EVENT_TYPES = frozenset({"ActivityScheduled", "TimerStarted"})
 ACTIVITY_TERMINAL_EVENT_TYPES = frozenset(
     {"ActivityCompleted", "ActivityFailed", "ActivityTimedOut"}
 )
+TIMER_TERMINAL_EVENT_TYPES = frozenset({"TimerFired", "TimerCanceled"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class HistoryIndex:
         self.scheduled: dict[int, HistoryEvent] = {}
         self.scheduled_entities: dict[UUID, HistoryEvent] = {}
         self.activity_terminal: dict[UUID, HistoryEvent] = {}
+        self.timer_terminal: dict[UUID, HistoryEvent] = {}
         previous_seq = 0
         for event in events:
             if event.seq != previous_seq + 1:
@@ -69,6 +71,21 @@ class HistoryIndex:
                     )
                 if event.event_type == "ActivityCompleted" or event.attributes.get("final", True):
                     self.activity_terminal[event.entity_id] = event
+            if event.event_type in TIMER_TERMINAL_EVENT_TYPES:
+                if event.entity_id is None:
+                    raise InvalidHistoryError(
+                        f"{event.event_type} at sequence {event.seq} lacks entity identity"
+                    )
+                scheduled = self.scheduled_entities.get(event.entity_id)
+                if scheduled is None or scheduled.event_type != "TimerStarted":
+                    raise InvalidHistoryError(
+                        f"{event.event_type} for entity {event.entity_id} has no prior timer start"
+                    )
+                if event.entity_id in self.timer_terminal:
+                    raise InvalidHistoryError(
+                        f"timer {event.entity_id} has multiple terminal events"
+                    )
+                self.timer_terminal[event.entity_id] = event
 
     def first_unvisited_command(self, next_command_id: int) -> HistoryEvent | None:
         remaining = [

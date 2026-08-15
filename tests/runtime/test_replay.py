@@ -3,7 +3,7 @@ from uuid import UUID
 
 import pytest
 
-from engine.runtime.commands import ScheduleActivity
+from engine.runtime.commands import ScheduleActivity, ScheduleTimer
 from engine.runtime.history import HistoryEvent, InvalidHistoryError
 from engine.runtime.replay import ReplayStatus, replay_workflow
 from engine.runtime.serialization import JSONValue
@@ -192,6 +192,51 @@ async def test_activity_rejects_nonpositive_timeout() -> None:
 
     assert replay.status is ReplayStatus.FAILED
     assert replay.failure == {"type": "ValueError", "message": "start_to_close must be positive"}
+
+
+@workflow(version=1)
+async def timer_workflow(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    await ctx.sleep(timedelta(hours=1))
+    return value
+
+
+async def test_timer_replay_schedules_blocks_and_resolves() -> None:
+    initial = await replay_workflow(
+        timer_workflow,
+        workflow_id=WORKFLOW_ID,
+        workflow_input="awake",
+        history=(started(),),
+    )
+    timer = initial.commands[0]
+    assert isinstance(timer, ScheduleTimer)
+    assert timer.delay_seconds == 3600
+    timer_started = HistoryEvent(
+        2,
+        "TimerStarted",
+        {"delay_seconds": timer.delay_seconds, "fingerprint": timer.fingerprint},
+        command_id=timer.command_id,
+        entity_id=timer.entity_id,
+    )
+    blocked = await replay_workflow(
+        timer_workflow,
+        workflow_id=WORKFLOW_ID,
+        workflow_input="awake",
+        history=(started(), timer_started),
+    )
+    assert blocked.status is ReplayStatus.BLOCKED
+
+    completed_replay = await replay_workflow(
+        timer_workflow,
+        workflow_id=WORKFLOW_ID,
+        workflow_input="awake",
+        history=(
+            started(),
+            timer_started,
+            HistoryEvent(3, "TimerFired", {}, entity_id=timer.entity_id),
+        ),
+    )
+    assert completed_replay.status is ReplayStatus.COMPLETED
+    assert completed_replay.result == "awake"
 
 
 async def test_replay_rejects_unvisited_historical_command() -> None:

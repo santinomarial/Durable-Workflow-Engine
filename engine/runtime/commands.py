@@ -19,3 +19,14 @@ class ScheduleActivity:
     start_to_close_seconds: float | None
     heartbeat_timeout_seconds: float | None
     fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleTimer:
+    command_id: int
+    entity_id: UUID
+    delay_seconds: float
+    fingerprint: str
+
+
+type Command = ScheduleActivity | ScheduleTimer

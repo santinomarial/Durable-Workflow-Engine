@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
-from engine.runtime.commands import ScheduleActivity
+from engine.runtime.commands import Command
 from engine.runtime.definitions import WorkflowDefinition
 from engine.runtime.history import HistoryEvent, HistoryIndex
 from engine.runtime.serialization import JSONValue, clone_json
@@ -23,7 +23,7 @@ class ReplayStatus(StrEnum):
 @dataclass(frozen=True, slots=True)
 class ReplayResult:
     status: ReplayStatus
-    commands: tuple[ScheduleActivity, ...] = ()
+    commands: tuple[Command, ...] = ()
     result: JSONValue = None
     failure: JSONValue = None
 
