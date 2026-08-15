@@ -9,6 +9,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID, uuid4
@@ -35,7 +36,9 @@ from engine.observability import METRICS, configure_logging
 from engine.persistence import (
     AuditContext,
     Pool,
+    backfill_schedule,
     create_configured_pool,
+    create_schedule,
     get_execution,
     get_execution_stats,
     get_history_page,
@@ -44,12 +47,15 @@ from engine.persistence import (
     list_api_audit,
     list_dead_tasks,
     list_executions,
+    list_schedule_occurrences,
+    list_schedules,
     list_worker_heartbeats,
     pause_workflow,
     request_workflow_cancellation,
     resume_workflow,
     retry_workflow,
     send_signal,
+    set_schedule_paused,
     start_workflow,
     terminate_workflow,
     update_search_attributes,
@@ -94,6 +100,24 @@ class PauseRequest(BaseModel):
 class SearchAttributesRequest(BaseModel):
     set: dict[str, Any] = Field(default_factory=dict)
     unset: list[str] = Field(default_factory=list, max_length=100)
+
+
+class ScheduleCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    workflow_type: str = Field(min_length=1, max_length=200)
+    definition_version: int = Field(ge=1)
+    input: Any = None
+    queue_name: str = Field(default="default", min_length=1, max_length=200)
+    search_attributes: dict[str, Any] = Field(default_factory=dict)
+    cron_expression: str = Field(min_length=1, max_length=200)
+    timezone: str = Field(default="UTC", min_length=1, max_length=200)
+    overlap_policy: Literal["allow", "skip", "buffer_one"] = "skip"
+
+
+class ScheduleBackfillRequest(BaseModel):
+    start_at: datetime
+    end_at: datetime
+    limit: int = Field(default=100, ge=1, le=100)
 
 
 def _pool(request: Request) -> Pool:
@@ -373,6 +397,96 @@ def create_app(pool: Pool | None = None, *, auth: AuthConfig | None = None) -> F
         return jsonable_encoder(
             [asdict(record) for record in await list_dead_tasks(_pool(request), limit=limit)]
         )
+
+    @application.get("/api/schedules")
+    async def schedules(request: Request) -> Any:
+        require_role(request, "viewer")
+        return jsonable_encoder(
+            [asdict(schedule) for schedule in await list_schedules(_pool(request))]
+        )
+
+    @application.post("/api/schedules", status_code=status.HTTP_201_CREATED)
+    async def create_workflow_schedule(body: ScheduleCreateRequest, request: Request) -> Any:
+        principal = require_role(request, "operator")
+        try:
+            schedule = await create_schedule(
+                _pool(request),
+                name=body.name,
+                workflow_type=body.workflow_type,
+                definition_version=body.definition_version,
+                workflow_input=cast(JSONValue, body.input),
+                queue_name=body.queue_name,
+                search_attributes=cast(dict[str, JSONValue], body.search_attributes),
+                cron_expression=body.cron_expression,
+                timezone=body.timezone,
+                overlap_policy=body.overlap_policy,
+                audit=_audit(request, principal, "schedule.create"),
+            )
+        except (TransitionError, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return jsonable_encoder(asdict(schedule))
+
+    @application.get("/api/schedules/{schedule_id}/occurrences")
+    async def schedule_occurrences(
+        schedule_id: UUID,
+        request: Request,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    ) -> Any:
+        require_role(request, "viewer")
+        return jsonable_encoder(
+            [
+                asdict(occurrence)
+                for occurrence in await list_schedule_occurrences(
+                    _pool(request), schedule_id=schedule_id, limit=limit
+                )
+            ]
+        )
+
+    @application.post("/api/schedules/{schedule_id}/pause")
+    async def pause_schedule(schedule_id: UUID, request: Request) -> dict[str, bool]:
+        principal = require_role(request, "operator")
+        try:
+            accepted = await set_schedule_paused(
+                _pool(request),
+                schedule_id=schedule_id,
+                paused=True,
+                audit=_audit(request, principal, "schedule.pause"),
+            )
+        except TransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"accepted": accepted}
+
+    @application.post("/api/schedules/{schedule_id}/resume")
+    async def resume_schedule(schedule_id: UUID, request: Request) -> dict[str, bool]:
+        principal = require_role(request, "operator")
+        try:
+            accepted = await set_schedule_paused(
+                _pool(request),
+                schedule_id=schedule_id,
+                paused=False,
+                audit=_audit(request, principal, "schedule.resume"),
+            )
+        except TransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"accepted": accepted}
+
+    @application.post("/api/schedules/{schedule_id}/backfill")
+    async def backfill_workflow_schedule(
+        schedule_id: UUID, body: ScheduleBackfillRequest, request: Request
+    ) -> dict[str, int]:
+        principal = require_role(request, "admin")
+        try:
+            started = await backfill_schedule(
+                _pool(request),
+                schedule_id=schedule_id,
+                start_at=body.start_at,
+                end_at=body.end_at,
+                limit=body.limit,
+                audit=_audit(request, principal, "schedule.backfill"),
+            )
+        except (TransitionError, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"started": started}
 
     @application.post("/api/workflows", status_code=status.HTTP_201_CREATED)
     async def start(body: StartWorkflowRequest, request: Request) -> dict[str, Any]:

@@ -17,6 +17,7 @@ migration compatibility remain explicit release requirements.
 - Dependency, static, CodeQL, secret, misconfiguration, and container scanning.
 - Indexed JSON search attributes with API filtering and operations-console editing.
 - Durable pause/resume, dead-letter inspection, and linked retry-as-new recovery.
+- Timezone-aware durable cron schedules with overlap policies and bounded backfills.
 
 ## [0.1.0] - 2026-08-15
 

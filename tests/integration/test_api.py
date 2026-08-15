@@ -48,7 +48,7 @@ async def test_api_controls_and_inspects_workflow() -> None:
             health = await client.get("/api/health")
             assert health.json()["status"] == "ready"
             assert health.json()["database"] == "ok"
-            assert health.json()["schema_version"] == "0011"
+            assert health.json()["schema_version"] == "0012"
             assert health.headers["cache-control"] == "no-store"
             assert health.headers["x-content-type-options"] == "nosniff"
             assert health.headers["x-frame-options"] == "DENY"
@@ -105,6 +105,31 @@ async def test_api_controls_and_inspects_workflow() -> None:
                 "failed",
                 "terminated",
             }
+
+            created_schedule = await client.post(
+                "/api/schedules",
+                json={
+                    "name": "api-every-hour",
+                    "workflow_type": api_workflow.name,
+                    "definition_version": 1,
+                    "input": {"scheduled": True},
+                    "queue_name": "api-schedule-queue",
+                    "cron_expression": "0 0 1 1 *",
+                    "timezone": "UTC",
+                    "overlap_policy": "buffer_one",
+                },
+            )
+            assert created_schedule.status_code == 201
+            schedule_id = created_schedule.json()["id"]
+            schedules = await client.get("/api/schedules")
+            assert schedule_id in {item["id"] for item in schedules.json()}
+            paused_schedule = await client.post(f"/api/schedules/{schedule_id}/pause")
+            resumed_schedule = await client.post(f"/api/schedules/{schedule_id}/resume")
+            assert paused_schedule.json() == {"accepted": True}
+            assert resumed_schedule.json() == {"accepted": True}
+            assert (await client.get(f"/api/schedules/{schedule_id}/occurrences")).json() == []
+            cleanup_pause = await client.post(f"/api/schedules/{schedule_id}/pause")
+            assert cleanup_pause.json() == {"accepted": True}
 
             started = await client.post(
                 "/api/workflows",
@@ -254,6 +279,10 @@ async def test_api_controls_and_inspects_workflow() -> None:
                 "workflow.pause",
                 "workflow.search-attributes.update",
                 "workflow.start",
+                "schedule.pause",
+                "schedule.resume",
+                "schedule.pause",
+                "schedule.create",
             ]
             assert all(record["actor_key_id"] == "api-admin" for record in audit.json())
             assert all(record["request_id"] for record in audit.json())

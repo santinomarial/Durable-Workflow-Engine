@@ -80,3 +80,17 @@ copies the immutable definition version, input, queue, and search attributes,
 adds `dwe.retry_of`, and never edits the original history. Operators should
 repair the underlying activity or configuration before retrying; external
 effects still require idempotency at their boundary.
+
+## Durable schedules
+
+Schedules use standard five-field cron expressions and IANA timezone names.
+The maintenance role materializes each occurrence in the same PostgreSQL
+transaction as its execution, first history event, and workflow task. A unique
+`(schedule_id, scheduled_at)` key prevents duplicate runs across concurrent
+maintenance workers.
+
+Overlap policy is explicit: `allow` starts concurrent executions, `skip` records
+a skipped occurrence while another run is open, and `buffer_one` retains one
+coalesced occurrence to start after the active run closes. Pausing a schedule
+does not pause executions it already started. Resuming computes the next future
+cron time; intentional historical runs use the admin-only bounded backfill API.

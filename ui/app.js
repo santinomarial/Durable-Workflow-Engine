@@ -27,6 +27,7 @@ const state = {
   authToken: null,
   principal: null,
   deadLetters: [],
+  schedules: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -809,6 +810,8 @@ function renderSession() {
   $("sign-out").hidden = !signedIn;
   $("open-start").disabled = !roleAtLeast("operator");
   $("open-dead-letter").disabled = !roleAtLeast("operator");
+  $("open-schedules").disabled = !signedIn;
+  $("schedule-submit").disabled = !roleAtLeast("operator");
 }
 
 function requireAuthentication(message = "Sign in to inspect and operate workflows.") {
@@ -1085,6 +1088,84 @@ async function loadDeadLetters() {
   }
 }
 
+function renderSchedules() {
+  const list = $("schedule-list");
+  list.replaceChildren(...state.schedules.map((schedule) => {
+    const toggle = element("button", {
+      className: "button button-secondary",
+      text: schedule.paused_at ? "Resume" : "Pause",
+      attrs: { type: "button", disabled: roleAtLeast("operator") ? null : "disabled" },
+    });
+    toggle.addEventListener("click", async () => {
+      const action = schedule.paused_at ? "resume" : "pause";
+      try {
+        setSubmitting(toggle, true, action === "pause" ? "Pausing…" : "Resuming…");
+        await api(`/api/schedules/${encodeURIComponent(schedule.id)}/${action}`, { method: "POST" });
+        toast(`Schedule ${action}d`, `${schedule.name} was ${action}d.`);
+        await loadSchedules();
+      } catch (error) {
+        toast(`Schedule ${action} failed`, error.message, "error");
+      } finally {
+        setSubmitting(toggle, false, humanize(action));
+      }
+    });
+    return element("article", { className: "schedule-card" }, [
+      element("div", {}, [element("strong", { text: schedule.name }), element("small", { text: `${schedule.workflow_type} · v${schedule.definition_version} · ${schedule.queue_name}` })]),
+      element("div", {}, [element("code", { className: "schedule-expression", text: schedule.cron_expression }), element("small", { text: `${schedule.timezone} · ${humanize(schedule.overlap_policy)}` })]),
+      element("div", {}, [element("strong", { text: schedule.paused_at ? "Paused" : relativeTime(schedule.next_run_at) }), element("small", { text: schedule.paused_at ? `Since ${formatDate(schedule.paused_at)}` : formatDate(schedule.next_run_at, true) })]),
+      toggle,
+    ]);
+  }));
+  $("schedule-empty").hidden = state.schedules.length > 0;
+}
+
+async function loadSchedules() {
+  try {
+    state.schedules = await api("/api/schedules");
+    renderSchedules();
+  } catch (error) {
+    $("schedule-error").textContent = error.message;
+    $("schedule-error").hidden = false;
+  }
+}
+
+async function createWorkflowSchedule(event) {
+  event.preventDefault();
+  const errorNode = $("schedule-error");
+  const button = $("schedule-submit");
+  errorNode.hidden = true;
+  try {
+    const input = parseJSON($("schedule-input").value, "Schedule input");
+    const searchAttributes = parseJSON($("schedule-attributes").value, "Schedule search attributes");
+    if (!searchAttributes || Array.isArray(searchAttributes) || typeof searchAttributes !== "object") throw new Error("Schedule search attributes must be a JSON object.");
+    const definitionVersion = Number.parseInt($("schedule-version").value, 10);
+    if (!Number.isInteger(definitionVersion) || definitionVersion < 1) throw new Error("Schedule version must be 1 or greater.");
+    setSubmitting(button, true, "Creating…");
+    await api("/api/schedules", {
+      method: "POST",
+      body: JSON.stringify({
+        name: $("schedule-name").value.trim(),
+        cron_expression: $("schedule-cron").value.trim(),
+        workflow_type: $("schedule-type").value.trim(),
+        definition_version: definitionVersion,
+        queue_name: $("schedule-queue").value.trim(),
+        timezone: $("schedule-timezone").value.trim(),
+        overlap_policy: $("schedule-overlap").value,
+        input,
+        search_attributes: searchAttributes,
+      }),
+    });
+    toast("Schedule created", "The first occurrence has been durably planned.");
+    $("schedule-name").value = "";
+    await loadSchedules();
+  } catch (error) {
+    errorNode.textContent = error.message;
+    errorNode.hidden = false;
+  } finally {
+    setSubmitting(button, false, "Create schedule");
+  }
+}
+
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#07111f" : "#f3f6f8";
@@ -1161,6 +1242,13 @@ function bindEvents() {
     await loadDeadLetters();
   });
   $("refresh-dead-letter").addEventListener("click", loadDeadLetters);
+  $("open-schedules").addEventListener("click", async () => {
+    $("schedule-error").hidden = true;
+    showDialog("schedules-dialog", "schedule-name");
+    await loadSchedules();
+  });
+  $("refresh-schedules").addEventListener("click", loadSchedules);
+  $("schedule-form").addEventListener("submit", createWorkflowSchedule);
   $("signal-form").addEventListener("submit", sendSignal);
   $("request-cancel").addEventListener("click", () => prepareConfirmation("cancel"));
   $("request-terminate").addEventListener("click", () => prepareConfirmation("terminate"));

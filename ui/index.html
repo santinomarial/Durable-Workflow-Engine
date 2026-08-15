@@ -42,6 +42,7 @@
           <span class="theme-icon" aria-hidden="true"></span>
         </button>
         <button id="open-dead-letter" class="button button-secondary" type="button">Dead letters</button>
+        <button id="open-schedules" class="button button-secondary" type="button">Schedules</button>
         <button id="open-start" class="button button-primary" type="button">
           <span aria-hidden="true">＋</span>
           New workflow
@@ -408,6 +409,37 @@
         <button class="button button-secondary" type="button" data-close-dialog="dead-letter-dialog">Close</button>
         <button id="refresh-dead-letter" class="button button-primary" type="button">Refresh</button>
       </div>
+    </dialog>
+
+    <dialog id="schedules-dialog" class="dialog dialog-wide">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">Durable automation</p>
+          <h2>Workflow schedules</h2>
+          <p>Run pinned workflows from timezone-aware cron expressions with explicit overlap handling.</p>
+        </div>
+        <button class="dialog-close icon-button" type="button" data-close-dialog="schedules-dialog" aria-label="Close">×</button>
+      </div>
+      <form id="schedule-form" class="schedule-form" novalidate>
+        <div class="form-grid">
+          <label class="field"><span>Name</span><input id="schedule-name" required placeholder="hourly-orders"></label>
+          <label class="field"><span>Cron expression</span><input id="schedule-cron" required value="0 * * * *" spellcheck="false"></label>
+          <label class="field"><span>Workflow type</span><input id="schedule-type" required placeholder="order-fulfillment"></label>
+          <label class="field"><span>Version</span><input id="schedule-version" type="number" min="1" value="1" required></label>
+          <label class="field"><span>Queue</span><input id="schedule-queue" value="default" required></label>
+          <label class="field"><span>IANA timezone</span><input id="schedule-timezone" value="UTC" required></label>
+          <label class="field field-wide"><span>Overlap policy</span>
+            <select id="schedule-overlap"><option value="skip">Skip while active</option><option value="buffer_one">Buffer one</option><option value="allow">Allow overlap</option></select>
+          </label>
+          <label class="field"><span>Input <small>JSON</small></span><textarea id="schedule-input" rows="5" spellcheck="false">{}</textarea></label>
+          <label class="field"><span>Search attributes <small>JSON</small></span><textarea id="schedule-attributes" rows="5" spellcheck="false">{}</textarea></label>
+        </div>
+        <p id="schedule-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-footer"><button id="schedule-submit" class="button button-primary" type="submit">Create schedule</button></div>
+      </form>
+      <div class="content-heading schedule-list-heading"><div><h3>Configured schedules</h3><p>Next run times are computed and persisted by the engine.</p></div><button id="refresh-schedules" class="button button-secondary" type="button">Refresh</button></div>
+      <div id="schedule-list" class="schedule-list"></div>
+      <div id="schedule-empty" class="inline-empty" hidden>No schedules are configured.</div>
     </dialog>
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>

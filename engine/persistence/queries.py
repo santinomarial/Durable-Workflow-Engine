@@ -31,6 +31,8 @@ class ExecutionSummary:
     paused_at: datetime | None
     pause_reason: str | None
     retry_of: UUID | None
+    schedule_id: UUID | None
+    scheduled_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +86,8 @@ def _execution(row: dict[str, object]) -> ExecutionSummary:
         paused_at=cast(datetime | None, row["paused_at"]),
         pause_reason=cast(str | None, row["pause_reason"]),
         retry_of=cast(UUID | None, row["retry_of"]),
+        schedule_id=cast(UUID | None, row["schedule_id"]),
+        scheduled_at=cast(datetime | None, row["scheduled_at"]),
     )
 
 
