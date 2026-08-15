@@ -23,6 +23,24 @@ Initial design and repository setup. Implementation has not started yet.
 - Transactional task dispatch with `FOR UPDATE SKIP LOCKED`
 - Deterministic workflow replay from append-only history
 
+## Development
+
+Install the Python 3.12 environment and development tools with
+[uv](https://docs.astral.sh/uv/):
+
+```shell
+uv sync --python 3.12 --all-groups
+```
+
+Run the repository checks:
+
+```shell
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy
+uv run pytest
+```
+
 ## Core guarantee
 
 For every accepted workflow transition, the resulting history events and
