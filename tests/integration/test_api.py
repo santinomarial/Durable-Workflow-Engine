@@ -37,9 +37,23 @@ async def test_api_controls_and_inspects_workflow() -> None:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             health = await client.get("/api/health")
             assert health.json() == {"status": "ok"}
+            assert health.headers["cache-control"] == "no-store"
+            assert health.headers["x-content-type-options"] == "nosniff"
+            assert health.headers["x-frame-options"] == "DENY"
+            assert health.headers["x-request-id"]
             page = await client.get("/")
             assert page.status_code == 200
             assert "Execution observatory" in page.text
+            assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
+
+            stats = await client.get("/api/stats")
+            assert set(stats.json()) == {
+                "total",
+                "running",
+                "completed",
+                "failed",
+                "terminated",
+            }
 
             started = await client.post(
                 "/api/workflows",

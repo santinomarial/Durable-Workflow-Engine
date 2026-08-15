@@ -12,9 +12,11 @@ from engine.persistence.leasing import (
     renew_lease,
 )
 from engine.persistence.queries import (
+    ExecutionStats,
     ExecutionSummary,
     HistoryRecord,
     get_execution,
+    get_execution_stats,
     get_history,
     list_executions,
 )
@@ -37,6 +39,7 @@ from engine.sdk.activity_context import ActivityCancellationRequested
 
 __all__ = [
     "ActivityCancellationRequested",
+    "ExecutionStats",
     "ExecutionSummary",
     "HistoryRecord",
     "LeasedTask",
@@ -50,6 +53,7 @@ __all__ = [
     "fail_activity",
     "fire_due_timer",
     "get_execution",
+    "get_execution_stats",
     "get_history",
     "heartbeat_activity",
     "lease_task",

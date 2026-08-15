@@ -30,6 +30,15 @@ class ExecutionSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionStats:
+    total: int
+    running: int
+    completed: int
+    failed: int
+    terminated: int
+
+
+@dataclass(frozen=True, slots=True)
 class HistoryRecord:
     seq: int
     event_type: str
@@ -93,6 +102,30 @@ async def get_execution(pool: Pool, workflow_id: UUID) -> ExecutionSummary | Non
             workflow_id,
         )
     return _execution(dict(row)) if row is not None else None
+
+
+async def get_execution_stats(pool: Pool) -> ExecutionStats:
+    """Return exact status counts for the operations console."""
+    async with pool.acquire() as connection:
+        row = await connection.fetchrow(
+            """
+            select
+              count(*) as total,
+              count(*) filter (where status = 'running') as running,
+              count(*) filter (where status = 'completed') as completed,
+              count(*) filter (where status = 'failed') as failed,
+              count(*) filter (where status = 'terminated') as terminated
+            from workflow_executions
+            """
+        )
+    assert row is not None
+    return ExecutionStats(
+        total=cast(int, row["total"]),
+        running=cast(int, row["running"]),
+        completed=cast(int, row["completed"]),
+        failed=cast(int, row["failed"]),
+        terminated=cast(int, row["terminated"]),
+    )
 
 
 async def get_history(pool: Pool, workflow_id: UUID) -> tuple[HistoryRecord, ...]:

@@ -8,18 +8,21 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 from engine.persistence import (
     Pool,
     create_pool,
     get_execution,
+    get_execution_stats,
     get_history,
     list_executions,
     request_workflow_cancellation,
@@ -92,6 +95,26 @@ def create_app(pool: Pool | None = None) -> FastAPI:
         application.state.pool = pool
     application.mount("/static", StaticFiles(directory=UI_DIR), name="static")
 
+    @application.middleware("http")
+    async def secure_responses(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = str(uuid4())
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; base-uri 'none'; connect-src 'self'; "
+                "font-src 'self'; form-action 'self'; frame-ancestors 'none'; "
+                "img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'"
+            )
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        elif request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+        return response
+
     @application.get("/", include_in_schema=False)
     async def index() -> FileResponse:
         return FileResponse(UI_DIR / "index.html")
@@ -110,6 +133,10 @@ def create_app(pool: Pool | None = None) -> FastAPI:
     ) -> Any:
         records = await list_executions(_pool(request), status=status_filter, limit=limit)
         return jsonable_encoder([asdict(record) for record in records])
+
+    @application.get("/api/stats")
+    async def stats(request: Request) -> Any:
+        return jsonable_encoder(asdict(await get_execution_stats(_pool(request))))
 
     @application.post("/api/workflows", status_code=status.HTTP_201_CREATED)
     async def start(body: StartWorkflowRequest, request: Request) -> dict[str, Any]:
