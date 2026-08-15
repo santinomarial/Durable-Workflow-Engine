@@ -1,3 +1,4 @@
+import random
 from datetime import timedelta
 from uuid import UUID
 
@@ -441,6 +442,78 @@ async def test_gather_schedules_all_children_and_joins_in_source_order() -> None
     assert joined.result == ["FIRST", "SECOND"]
 
 
+@workflow(version=1, name="fuzzed-interleavings")
+async def fuzzed_interleavings(ctx: WorkflowContext, value: JSONValue) -> JSONValue:
+    del value
+    activities = await ctx.gather(*(ctx.activity(uppercase, str(index)) for index in range(5)))
+    first_signal = await ctx.wait_signal("item")
+    second_signal = await ctx.wait_signal("item")
+    return {"activities": activities, "signals": [first_signal, second_signal]}
+
+
+async def test_replay_fuzzes_completion_and_signal_arrival_order() -> None:
+    initial = await replay_workflow(
+        fuzzed_interleavings,
+        workflow_id=WORKFLOW_ID,
+        workflow_input=None,
+        history=(started(),),
+    )
+    commands = initial.commands
+    assert len(commands) == 5
+    assert all(isinstance(command, ScheduleActivity) for command in commands)
+    activity_commands = [command for command in commands if isinstance(command, ScheduleActivity)]
+    schedules = tuple(
+        scheduled(index + 2, command) for index, command in enumerate(activity_commands)
+    )
+
+    for seed in range(50):
+        interleaved: list[tuple[str, int | str]] = [
+            *(("completion", index) for index in range(5)),
+            ("item", "first"),
+            ("item", "second"),
+            ("noise", "left"),
+            ("noise", "right"),
+        ]
+        random.Random(seed).shuffle(interleaved)
+        events: list[HistoryEvent] = [started(), *schedules]
+        expected_signals: list[str] = []
+        for kind, value in interleaved:
+            seq = len(events) + 1
+            if kind == "completion":
+                index = int(value)
+                events.append(completed(seq, activity_commands[index], str(index)))
+            else:
+                payload = str(value)
+                events.append(
+                    HistoryEvent(
+                        seq,
+                        "SignalReceived",
+                        {"name": kind, "payload": payload},
+                        external_id=f"{seed}-{kind}-{payload}",
+                    )
+                )
+                if kind == "item":
+                    expected_signals.append(payload)
+
+        replay = await replay_workflow(
+            fuzzed_interleavings,
+            workflow_id=WORKFLOW_ID,
+            workflow_input=None,
+            history=tuple(events),
+        )
+        repeated = await replay_workflow(
+            fuzzed_interleavings,
+            workflow_id=WORKFLOW_ID,
+            workflow_input=None,
+            history=tuple(events),
+        )
+        assert replay == repeated
+        assert replay.result == {
+            "activities": ["0", "1", "2", "3", "4"],
+            "signals": expected_signals,
+        }
+
+
 async def test_replay_rejects_unvisited_historical_command() -> None:
     first = await replay_workflow(
         sequential_workflow,
@@ -481,6 +554,32 @@ async def test_replay_rejects_terminal_event_without_schedule() -> None:
                     "ActivityCompleted",
                     {"result": "orphaned"},
                     entity_id=UUID("c53d44e5-8fc5-47a2-8884-a16ef30563f4"),
+                ),
+            ),
+        )
+
+
+async def test_replay_rejects_missing_start_and_events_after_terminal() -> None:
+    with pytest.raises(InvalidHistoryError, match="must begin"):
+        await replay_workflow(
+            immediate_workflow,
+            workflow_id=WORKFLOW_ID,
+            workflow_input=None,
+            history=(),
+        )
+    with pytest.raises(InvalidHistoryError, match="appears after terminal"):
+        await replay_workflow(
+            immediate_workflow,
+            workflow_id=WORKFLOW_ID,
+            workflow_input=None,
+            history=(
+                started(),
+                HistoryEvent(2, "WorkflowExecutionCompleted", {"result": None}),
+                HistoryEvent(
+                    3,
+                    "SignalReceived",
+                    {"name": "late", "payload": None},
+                    external_id="late",
                 ),
             ),
         )

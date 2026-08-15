@@ -12,6 +12,13 @@ ACTIVITY_TERMINAL_EVENT_TYPES = frozenset(
     {"ActivityCompleted", "ActivityFailed", "ActivityTimedOut"}
 )
 TIMER_TERMINAL_EVENT_TYPES = frozenset({"TimerFired", "TimerCanceled"})
+WORKFLOW_TERMINAL_EVENT_TYPES = frozenset(
+    {
+        "WorkflowExecutionCompleted",
+        "WorkflowExecutionFailed",
+        "WorkflowExecutionTerminated",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +37,8 @@ class InvalidHistoryError(RuntimeError):
 
 class HistoryIndex:
     def __init__(self, events: tuple[HistoryEvent, ...]) -> None:
+        if not events or events[0].event_type != "WorkflowExecutionStarted":
+            raise InvalidHistoryError("history must begin with WorkflowExecutionStarted")
         self.events = events
         self.scheduled: dict[int, HistoryEvent] = {}
         self.scheduled_entities: dict[UUID, HistoryEvent] = {}
@@ -37,6 +46,7 @@ class HistoryIndex:
         self.timer_terminal: dict[UUID, HistoryEvent] = {}
         self.signals: list[HistoryEvent] = []
         self.cancellation_requested: HistoryEvent | None = None
+        self.workflow_terminal: HistoryEvent | None = None
         previous_seq = 0
         for event in events:
             if event.seq != previous_seq + 1:
@@ -45,6 +55,13 @@ class HistoryIndex:
                     f"found {event.seq}"
                 )
             previous_seq = event.seq
+            if self.workflow_terminal is not None:
+                raise InvalidHistoryError(
+                    f"event {event.event_type} appears after terminal "
+                    f"{self.workflow_terminal.event_type}"
+                )
+            if event.event_type == "WorkflowExecutionStarted" and event.seq != 1:
+                raise InvalidHistoryError("WorkflowExecutionStarted appears more than once")
             if event.event_type in SCHEDULE_EVENT_TYPES:
                 if event.command_id is None:
                     raise InvalidHistoryError(
@@ -108,6 +125,8 @@ class HistoryIndex:
                 if self.cancellation_requested is not None:
                     raise InvalidHistoryError("workflow cancellation was requested more than once")
                 self.cancellation_requested = event
+            if event.event_type in WORKFLOW_TERMINAL_EVENT_TYPES:
+                self.workflow_terminal = event
 
     def first_unvisited_command(self, next_command_id: int) -> HistoryEvent | None:
         remaining = [
