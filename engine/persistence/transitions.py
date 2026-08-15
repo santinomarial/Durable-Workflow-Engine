@@ -383,3 +383,83 @@ async def commit_workflow_replay(
         )
         if completed_task != "UPDATE 1":
             raise StaleLeaseError(f"workflow task {task.id} lost its lease before commit")
+
+
+async def complete_activity(
+    pool: Pool,
+    *,
+    task: LeasedTask,
+    result: JSONValue,
+) -> None:
+    """Fence an activity completion, append its result, and wake workflow replay."""
+    if task.task_type != "activity" or task.entity_id is None:
+        raise ValueError("only an activity task can complete an activity")
+    async with pool.acquire() as connection, connection.transaction():
+        locked_task = await connection.fetchrow(
+            """
+            select workflow_id, entity_id, attempt, queue_name
+            from tasks
+            where id = $1 and status = 'leased' and lease_token = $2
+            for update
+            """,
+            task.id,
+            task.lease_token,
+        )
+        if locked_task is None:
+            raise StaleLeaseError(f"activity task {task.id} does not hold the current lease")
+        execution = await connection.fetchrow(
+            """
+            select status, next_seq
+            from workflow_executions
+            where id = $1
+            for update
+            """,
+            task.workflow_id,
+        )
+        if execution is None:
+            raise TransitionError(f"workflow {task.workflow_id} does not exist")
+        if execution["status"] != "running":
+            raise TerminalWorkflowError(f"workflow {task.workflow_id} is {execution['status']}")
+
+        next_seq = cast(int, execution["next_seq"])
+        await connection.execute(
+            """
+            insert into history_events (
+              workflow_id, seq, event_type, entity_id, attributes
+            ) values ($1, $2, 'ActivityCompleted', $3, $4::jsonb)
+            """,
+            task.workflow_id,
+            next_seq,
+            task.entity_id,
+            canonical_json(
+                {
+                    "result": clone_json(result),
+                    "attempt": cast(int, locked_task["attempt"]),
+                }
+            ),
+        )
+        completed_task = await connection.execute(
+            """
+            update tasks
+            set status = 'completed', completed_at = now()
+            where id = $1 and status = 'leased' and lease_token = $2
+            """,
+            task.id,
+            task.lease_token,
+        )
+        if completed_task != "UPDATE 1":
+            raise StaleLeaseError(f"activity task {task.id} lost its lease before commit")
+        await connection.execute(
+            """
+            insert into tasks (id, workflow_id, task_type, queue_name)
+            values ($1, $2, 'workflow', $3)
+            """,
+            uuid4(),
+            task.workflow_id,
+            locked_task["queue_name"],
+        )
+        await connection.execute(
+            "update workflow_executions set next_seq = $2 where id = $1",
+            task.workflow_id,
+            next_seq + 1,
+        )
