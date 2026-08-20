@@ -1352,7 +1352,7 @@ async function createWorkflowSchedule(event) {
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#07111f" : "#f3f6f8";
+  document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#050505" : "#f4f4f0";
   $("theme-toggle").setAttribute("aria-label", theme === "dark" ? "Use light theme" : "Use dark theme");
   safeStorageSet("dwe-theme", theme);
 }

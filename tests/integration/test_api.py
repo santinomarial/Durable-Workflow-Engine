@@ -59,8 +59,8 @@ async def test_api_controls_and_inspects_workflow() -> None:
             assert readiness.json()["status"] == "ready"
             page = await client.get("/")
             assert page.status_code == 200
-            assert "Workflow operations" in page.text
-            assert "Execution fleet" in page.text
+            assert "Workflow control plane" in page.text
+            assert "Workflow executions" in page.text
             assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
             script = await client.get("/static/app.js")
             assert script.status_code == 200

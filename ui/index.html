@@ -4,10 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark light">
-    <meta name="theme-color" content="#07111f">
+    <meta name="theme-color" content="#050505">
     <meta name="description" content="Operate and inspect durable workflow executions.">
-    <title>Durable · Workflow Operations</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <title>DWE / Workflow Control Plane</title>
+    <link rel="stylesheet" href="/static/styles.css?v=monochrome">
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to workflow operations</a>
@@ -18,8 +18,8 @@
       <a class="brand" href="/" aria-label="Durable workflow operations home">
         <span class="brand-mark" aria-hidden="true">D</span>
         <span>
-          <strong>Durable</strong>
-          <small>Workflow operations</small>
+          <strong>DWE</strong>
+          <small>Workflow control plane</small>
         </span>
       </a>
 
@@ -54,8 +54,8 @@
       <section class="overview" aria-labelledby="overview-title">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">Operations overview</p>
-            <h1 id="overview-title">Execution fleet</h1>
+            <p class="eyebrow">Runtime / Operations</p>
+            <h1 id="overview-title">Workflow executions</h1>
           </div>
           <button id="refresh" class="button button-quiet" type="button" title="Refresh (R)">
             <span class="refresh-icon" aria-hidden="true">↻</span>
@@ -497,6 +497,6 @@
     </dialog>
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=monochrome" defer></script>
   </body>
 </html>
