@@ -16,5 +16,6 @@ append cost as history grows, pending-depth degradation, and concurrent poller
 contention. Results are local-system evidence, not universal capacity claims.
 
 Use an empty, dedicated database: the runner applies migrations and deliberately
-leaves benchmark rows behind. See `docs/benchmarks.md` for the published run,
-sample sizes, bottleneck analysis, and limitations.
+leaves benchmark rows behind. See `docs/reference/benchmark-results.md` for the
+published run and sample sizes, and `docs/explanation/benchmark-analysis.md`
+for bottleneck analysis and limitations.

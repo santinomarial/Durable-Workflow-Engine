@@ -8,8 +8,12 @@ append-only event history and safely resumes them after process death.
 
 This repository implements the mechanisms behind durable execution rather than
 claiming to replace Temporal. The centerpiece is a
-[real-`SIGKILL` chaos profile](docs/chaos.md); its short terminal recording can
-be replayed with `asciinema play docs/chaos-demo.cast`.
+[real-`SIGKILL` chaos profile](docs/explanation/chaos-methodology.md); its
+short terminal recording can be replayed with
+`asciinema play docs/chaos-demo.cast`.
+
+Full documentation, organized as [tutorials, how-to guides, reference, and
+explanation](docs/index.md), lives under [`docs/`](docs/index.md).
 
 ## Guarantees and non-guarantees
 
@@ -41,7 +45,8 @@ The central guarantee is:
 ## Quickstart
 
 Requirements are Python 3.12, [uv](https://docs.astral.sh/uv/), Docker, and
-Docker Compose.
+Docker Compose. For a narrated, step-by-step version of this walkthrough, see
+the [getting-started tutorial](docs/tutorials/getting-started.md).
 
 ```shell
 uv sync --python 3.12 --all-groups
@@ -95,17 +100,20 @@ pinned version, preserving chain navigation while starting a bounded fresh
 history. A replay debugger steps through causal state frame by frame and
 compares committed command fingerprints across runs. OpenAPI documentation is
 at `/docs`; SDK examples are in the
-[Python SDK guide](docs/sdk.md).
+[Python SDK reference](docs/reference/sdk-api.md).
 Production authentication is fail closed and uses hashed bearer-key
-configuration with viewer, operator, and administrator roles. See the
-[security guide](docs/security.md) before exposing the control plane.
+configuration with viewer, operator, and administrator roles. See
+[provision and rotate API keys](docs/how-to/provision-and-rotate-api-keys.md)
+before exposing the control plane.
 The non-root container and hardened single-host reference topology are covered
-in the [deployment guide](docs/deployment.md); backup, restore drills, and
-history lifecycle constraints are covered in [data recovery](docs/backup-restore.md).
+in [deploy to production](docs/how-to/deploy-to-production.md); backup, restore
+drills, and history lifecycle constraints are covered in
+[back up and restore](docs/how-to/back-up-and-restore.md).
 Security reports and supported versions are covered by the
 [security policy](SECURITY.md). Operators should also review the
-[incident-response runbook](docs/incident-response.md), while maintainers can
-follow the [release procedure](docs/releasing.md).
+[incident-response guide](docs/how-to/respond-to-an-incident.md), while
+maintainers can follow the
+[release procedure](docs/how-to/release-a-version.md).
 
 ## Replay model
 
@@ -206,7 +214,8 @@ then:
 The current profile passes all six workflows. Its exact supported claim is that
 under those injected worker and connection failure windows, no committed
 workflow transition is lost, stale completion is rejected, and the cooperating
-ledger observes one effect per key. See [the methodology](docs/chaos.md) and run:
+ledger observes one effect per key. See
+[the methodology](docs/explanation/chaos-methodology.md) and run:
 
 ```shell
 export DWE_TEST_DATABASE_URL=postgresql://durable:durable@localhost:5432/durable
@@ -235,8 +244,10 @@ limit. Replay cost is linear and reaches 422 ms at 100,000 events. A larger
 design would first add snapshots and partition task indexes plus
 execution/history ownership by queue or workflow ID.
 
-Full metadata, workloads, sample sizes, warmup policy, limitations, raw JSON,
-and reproduction commands are in [the benchmark report](docs/benchmarks.md).
+Full metadata, workloads, sample sizes, warmup policy, and limitations are in
+[the benchmark results](docs/reference/benchmark-results.md); interpretation
+is in [benchmark analysis](docs/explanation/benchmark-analysis.md);
+reproduction commands are in [run benchmarks](docs/how-to/run-benchmarks.md).
 
 ## Verification
 
@@ -247,7 +258,8 @@ scanning. Tagged releases produce checksums, a CycloneDX SBOM, and build
 provenance attestations.
 The runtime provides JSON request/worker logs, database-visible worker
 heartbeats, separate liveness/readiness probes, and authenticated Prometheus
-metrics; deployment guidance is in [production operations](docs/operations.md).
+metrics; deployment guidance is in
+[monitor and operate](docs/how-to/monitor-and-operate.md).
 Locally:
 
 ```shell
@@ -283,4 +295,4 @@ uv run pytest
 - No software license has been selected.
 
 The detailed design rationale and milestone acceptance criteria remain in the
-[implementation blueprint](docs/implementation-plan.md).
+[implementation blueprint](docs/design/implementation-plan.md).
