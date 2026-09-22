@@ -36,6 +36,13 @@ jobs:
         run: sh -n scripts/*.sh
       - name: Validate production Compose topology
         run: docker compose -f compose.production.yaml config --quiet
+      - name: Validate local demo Compose topology
+        run: docker compose -f compose.demo.yaml config --quiet
+      - name: Verify container CLI entry point
+        run: |
+          docker build --target runtime -t dwe-ci-smoke .
+          docker run --rm --entrypoint engine dwe-ci-smoke --help
+          docker run --rm --workdir / --entrypoint python dwe-ci-smoke -c "import examples.order_workflow"
       - name: Python security analysis
         run: uv run bandit --quiet --recursive engine
       - name: Locked dependency vulnerability audit

@@ -6,6 +6,7 @@
 @workflow(version=1, name="account")
 async def account(ctx: WorkflowContext, state: JSONValue) -> JSONValue: ...
 
+
 @activity(name="charge")
 async def charge(ctx: ActivityContext, amount: int) -> JSONValue: ...
 ```

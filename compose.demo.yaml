@@ -1,0 +1,63 @@
+# Local-only showcase. Authentication is disabled; never publish this topology.
+name: dwe-demo
+
+x-engine: &engine
+  build:
+    context: .
+    target: runtime
+  image: durable-workflow-engine:demo
+  init: true
+  environment:
+    DATABASE_URL: postgresql://durable:demo-only@postgres:5432/durable
+    DWE_AUTH_MODE: disabled
+  depends_on:
+    postgres:
+      condition: service_healthy
+  networks:
+    - demo
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: durable
+      POSTGRES_USER: durable
+      POSTGRES_PASSWORD: demo-only
+    volumes:
+      - demo-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U durable -d durable"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    networks:
+      - demo
+
+  api:
+    <<: *engine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${DWE_DEMO_PORT:-8001}:8000"
+
+  worker:
+    <<: *engine
+    restart: unless-stopped
+    command: ["engine", "worker", "--definitions", "examples.demo_workflows:registry", "--queue", "demo"]
+    healthcheck:
+      disable: true
+
+  seed:
+    <<: *engine
+    command: ["python", "-m", "examples.seed_demo"]
+    healthcheck:
+      disable: true
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  demo-postgres-data:
+
+networks:
+  demo:

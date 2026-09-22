@@ -15,6 +15,12 @@ short terminal recording can be replayed with
 Full documentation, organized as [tutorials, how-to guides, reference, and
 explanation](docs/index.md), lives under [`docs/`](docs/index.md).
 
+Want to see it working first? Run `docker compose -f compose.demo.yaml up
+--build -d`, then open [http://127.0.0.1:8001](http://127.0.0.1:8001). The
+local-only stack starts the API and worker and populates four inspectable
+workflow scenarios. See the [demo tutorial](docs/tutorials/one-command-demo.md)
+for what to try and how to stop it.
+
 ## Guarantees and non-guarantees
 
 The engine guarantees, within one PostgreSQL instance:

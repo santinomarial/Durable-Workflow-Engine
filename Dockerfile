@@ -7,7 +7,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     UV_LINK_MODE=copy
 
 RUN python -m pip install --no-cache-dir "uv==${UV_VERSION}"
-WORKDIR /build
+WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY engine ./engine
 COPY migrations ./migrations
@@ -20,6 +20,7 @@ LABEL org.opencontainers.image.title="Durable Workflow Engine" \
       org.opencontainers.image.source="https://github.com/santinomarial/Durable-Workflow-Engine"
 
 ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONPATH="/app" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DWE_LOG_FORMAT=json
@@ -28,7 +29,7 @@ RUN groupadd --gid 10001 durable \
     && useradd --uid 10001 --gid durable --no-create-home --home-dir /nonexistent durable
 
 WORKDIR /app
-COPY --from=builder --chown=durable:durable /build/.venv ./.venv
+COPY --from=builder --chown=durable:durable /app/.venv ./.venv
 COPY --chown=durable:durable examples ./examples
 
 USER 10001:10001

@@ -8,6 +8,9 @@ four kinds of writing for four different things a reader needs.
 Learning-oriented. Start here if you're new — it walks you through running
 the engine end to end, one guided path, no decisions to make.
 
+For a populated console with one Docker command, see the
+[local demo tutorial](tutorials/one-command-demo.md).
+
 ## How-to guides
 
 Goal-oriented recipes for someone who already knows what they're trying to
