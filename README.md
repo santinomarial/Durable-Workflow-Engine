@@ -218,7 +218,8 @@ ledger observes one effect per key. See
 [the methodology](docs/explanation/chaos-methodology.md) and run:
 
 ```shell
-export DWE_TEST_DATABASE_URL=postgresql://durable:durable@localhost:5432/durable
+docker compose exec -T postgres createdb -U durable durable_test  # once
+export DWE_TEST_DATABASE_URL=postgresql://durable:durable@localhost:5432/durable_test
 uv run pytest -m chaos -v
 ```
 
@@ -263,6 +264,8 @@ metrics; deployment guidance is in
 Locally:
 
 ```shell
+docker compose exec -T postgres createdb -U durable durable_test  # once
+export DWE_TEST_DATABASE_URL=postgresql://durable:durable@localhost:5432/durable_test
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy
@@ -271,7 +274,6 @@ uv run scripts/security-audit.sh
 node --check ui/app.js
 sh -n scripts/*.sh
 docker compose -f compose.production.yaml config --quiet
-export DWE_TEST_DATABASE_URL=postgresql://durable:durable@localhost:5432/durable
 uv run pytest
 ```
 
