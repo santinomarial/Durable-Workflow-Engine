@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.8
-FROM python:3.12.13-slim-bookworm AS builder
+FROM python:3.14.7-slim-bookworm AS builder
 
 ARG UV_VERSION=0.11.2
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -14,7 +14,7 @@ COPY migrations ./migrations
 COPY ui ./ui
 RUN uv sync --frozen --no-dev --no-editable
 
-FROM python:3.12.13-slim-bookworm AS runtime
+FROM python:3.14.7-slim-bookworm AS runtime
 
 LABEL org.opencontainers.image.title="Durable Workflow Engine" \
       org.opencontainers.image.source="https://github.com/santinomarial/Durable-Workflow-Engine"
