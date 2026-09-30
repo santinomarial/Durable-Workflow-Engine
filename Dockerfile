@@ -25,7 +25,10 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     DWE_LOG_FORMAT=json
 
-RUN groupadd --gid 10001 durable \
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 durable \
     && useradd --uid 10001 --gid durable --no-create-home --home-dir /nonexistent durable
 
 WORKDIR /app
