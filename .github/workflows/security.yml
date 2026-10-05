@@ -27,7 +27,7 @@ jobs:
       matrix:
         language: [python, javascript-typescript]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
@@ -42,15 +42,15 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Review dependency changes
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
       - name: Set up Python
         if: github.event_name != 'pull_request'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install uv
@@ -66,7 +66,7 @@ jobs:
   container:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build locked production image
         run: docker build --pull --tag dwe-security:${{ github.sha }} .
       - name: Export image for scanner isolation
