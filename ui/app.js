@@ -1534,15 +1534,16 @@ async function initialize() {
   renderSession();
   setActiveTab(state.activeTab, false);
   await loadHealth();
-  if (state.authToken) {
-    try {
-      await authenticateSession();
-      await loadDashboard();
-    } catch (error) {
-      requireAuthentication(error.status === 401 ? "Your saved session is no longer valid." : error.message);
-    }
-  } else {
-    requireAuthentication();
+  try {
+    await authenticateSession();
+    await loadDashboard();
+  } catch (error) {
+    const message = state.authToken && error.status === 401
+      ? "Your saved session is no longer valid."
+      : error.status === 401
+        ? "Sign in to inspect and operate workflows."
+        : error.message;
+    requireAuthentication(message);
   }
   schedulePolling();
 }
